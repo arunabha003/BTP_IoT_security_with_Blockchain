@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "accum"
+version = "0.1.0"
+description = "RSA accumulator primitives (demo)"
+requires-python = ">=3.11"
+dependencies = [
+  "sympy>=1.13.0",
+  "pycryptodome>=3.20.0"
+]
+
+[tool.setuptools.packages.find]
+where=["."]
+
