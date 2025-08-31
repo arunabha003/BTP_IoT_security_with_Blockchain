@@ -10,13 +10,27 @@ import pytest
 from typing import Set
 
 try:
-    from accum.accumulator import add_member, recompute_root, membership_witness, verify_membership
-    from accum.rsa_params import generate_demo_params
+    from accum.accumulator import (
+        add_member, recompute_root, membership_witness, verify_membership,
+        remove_member, batch_remove_members
+    )
 except ImportError:
     import sys
     sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
-    from accumulator import add_member, recompute_root, membership_witness, verify_membership
-    from rsa_params import generate_demo_params
+    from accumulator import (
+        add_member, recompute_root, membership_witness, verify_membership,
+        remove_member, batch_remove_members
+    )
+
+
+def generate_demo_params():
+    """Generate demo RSA parameters for testing."""
+    # Use small primes for testing
+    p, q = 11, 19
+    N = p * q  # N = 209
+    # Use QR base: g = h^2 mod N (h=2 -> g=4)
+    g = pow(2, 2, N)  # g = 4, ensuring g is in quadratic residue subgroup
+    return N, g
 
 
 class TestAccumulatorCore:
@@ -305,3 +319,248 @@ class TestAccumulatorCore:
         A2 = add_member(g, 13 * 17 * 23, N)  # Direct computation
         
         assert A1 == A2
+
+
+class TestAccumulatorRemoval:
+    """Test RSA accumulator removal operations with trapdoor."""
+    
+    @pytest.fixture
+    def toy_params_with_trapdoor(self):
+        """Provide toy RSA parameters with trapdoor information."""
+        p, q = 11, 19  # Small primes for testing
+        N = p * q  # N = 209
+        g = 2
+        trapdoor = (p, q)
+        return N, g, trapdoor
+    
+    def test_remove_member_basic(self, toy_params_with_trapdoor):
+        """Test basic member removal with trapdoor."""
+        N, g, trapdoor = toy_params_with_trapdoor
+        
+        # Create accumulator with primes coprime to λ(N) = 90
+        primes = [7, 13, 17]  # All coprime to 90 = 2 * 3^2 * 5
+        A = g
+        for prime in primes:
+            A = add_member(A, prime, N)
+        
+        # Remove prime 13
+        A_new = remove_member(A, 13, N, trapdoor)
+        
+        # Verify by recomputing from remaining primes
+        remaining_primes = [7, 17]
+        expected_A = recompute_root(remaining_primes, N, g)
+        assert A_new == expected_A
+        
+        # Verify removal property: A_new^13 ≡ A (mod N)
+        assert pow(A_new, 13, N) == A
+    
+    def test_remove_member_single_prime(self, toy_params_with_trapdoor):
+        """Test removing single prime from accumulator."""
+        N, g, trapdoor = toy_params_with_trapdoor
+        
+        # Create accumulator with single prime
+        prime = 17
+        A = add_member(g, prime, N)
+        
+        # Remove the prime
+        A_new = remove_member(A, prime, N, trapdoor)
+        
+        # Should get back to generator
+        assert A_new == g
+    
+    def test_remove_member_without_trapdoor(self, toy_params_with_trapdoor):
+        """Test that removal without trapdoor raises NotImplementedError."""
+        N, g, _ = toy_params_with_trapdoor
+        A = add_member(g, 7, N)
+        
+        with pytest.raises(NotImplementedError, match="Direct removal requires trapdoor"):
+            remove_member(A, 7, N)  # No trapdoor provided
+    
+    def test_remove_member_problematic_prime(self, toy_params_with_trapdoor):
+        """Test removal of prime that shares factors with λ(N)."""
+        N, g, trapdoor = toy_params_with_trapdoor
+        # λ(N) = 90 = 2 * 3^2 * 5
+        
+        # Create accumulator with prime 5 (which divides λ(N))
+        A = add_member(g, 5, N)
+        
+        # Should fail to remove prime 5
+        with pytest.raises(ValueError, match="Cannot compute modular inverse"):
+            remove_member(A, 5, N, trapdoor)
+    
+    def test_remove_member_invalid_inputs(self, toy_params_with_trapdoor):
+        """Test removal with invalid inputs."""
+        N, g, trapdoor = toy_params_with_trapdoor
+        A = add_member(g, 7, N)
+        
+        # Invalid A
+        with pytest.raises(ValueError):
+            remove_member(-1, 7, N, trapdoor)
+        
+        # Invalid prime
+        with pytest.raises(ValueError):
+            remove_member(A, -1, N, trapdoor)
+        
+        # Invalid N
+        with pytest.raises(ValueError):
+            remove_member(A, 7, -1, trapdoor)
+        
+        # Prime too large
+        with pytest.raises(ValueError):
+            remove_member(A, N + 1, N, trapdoor)
+
+
+class TestAccumulatorBatchRemoval:
+    """Test RSA accumulator batch removal operations."""
+    
+    @pytest.fixture
+    def toy_params_with_trapdoor(self):
+        """Provide toy RSA parameters with trapdoor information."""
+        p, q = 11, 19  # Small primes for testing
+        N = p * q  # N = 209
+        g = 2
+        trapdoor = (p, q)
+        return N, g, trapdoor
+    
+    def test_batch_remove_members_basic(self, toy_params_with_trapdoor):
+        """Test basic batch removal."""
+        N, g, trapdoor = toy_params_with_trapdoor
+        
+        # Create accumulator with multiple primes
+        primes = [7, 11, 13, 17]  # All coprime to λ(N) = 90
+        A = g
+        for prime in primes:
+            A = add_member(A, prime, N)
+        
+        # Remove multiple primes
+        primes_to_remove = [11, 17]
+        A_new = batch_remove_members(A, primes_to_remove, N, trapdoor)
+        
+        # Verify by recomputing from remaining primes
+        remaining_primes = [7, 13]
+        expected_A = recompute_root(remaining_primes, N, g)
+        assert A_new == expected_A
+    
+    def test_batch_remove_members_empty_list(self, toy_params_with_trapdoor):
+        """Test batch removal with empty list."""
+        N, g, trapdoor = toy_params_with_trapdoor
+        A = add_member(g, 7, N)
+        
+        # Remove nothing
+        A_new = batch_remove_members(A, [], N, trapdoor)
+        assert A_new == A
+    
+    def test_batch_remove_members_all_primes(self, toy_params_with_trapdoor):
+        """Test removing all primes from accumulator."""
+        N, g, trapdoor = toy_params_with_trapdoor
+        
+        # Create accumulator with primes
+        primes = [7, 13]
+        A = g
+        for prime in primes:
+            A = add_member(A, prime, N)
+        
+        # Remove all primes
+        A_new = batch_remove_members(A, primes, N, trapdoor)
+        
+        # Should get back to generator
+        assert A_new == g
+    
+    def test_batch_remove_members_without_trapdoor(self, toy_params_with_trapdoor):
+        """Test that batch removal without trapdoor raises NotImplementedError."""
+        N, g, _ = toy_params_with_trapdoor
+        A = add_member(add_member(g, 7, N), 13, N)
+        
+        with pytest.raises(NotImplementedError, match="Batch removal requires trapdoor"):
+            batch_remove_members(A, [7, 13], N)  # No trapdoor provided
+    
+    def test_batch_remove_vs_sequential_equivalence(self, toy_params_with_trapdoor):
+        """Test that batch removal equals sequential removal."""
+        N, g, trapdoor = toy_params_with_trapdoor
+        
+        # Create accumulator with multiple primes
+        primes = [7, 13, 17, 23]  # All coprime to λ(N) = 90
+        A = g
+        for prime in primes:
+            A = add_member(A, prime, N)
+        
+        primes_to_remove = [13, 23]
+        
+        # Method 1: Batch removal
+        A_batch = batch_remove_members(A, primes_to_remove, N, trapdoor)
+        
+        # Method 2: Sequential removal
+        A_sequential = A
+        for prime in primes_to_remove:
+            A_sequential = remove_member(A_sequential, prime, N, trapdoor)
+        
+        assert A_batch == A_sequential
+
+
+class TestAccumulatorAddRemoveCycle:
+    """Test add/remove cycles maintain mathematical correctness."""
+    
+    @pytest.fixture
+    def toy_params_with_trapdoor(self):
+        """Provide toy RSA parameters with trapdoor information."""
+        p, q = 11, 19  # Small primes for testing
+        N = p * q  # N = 209
+        g = 2
+        trapdoor = (p, q)
+        return N, g, trapdoor
+    
+    def test_add_remove_cycle(self, toy_params_with_trapdoor):
+        """Test that adding then removing a prime returns to original state."""
+        N, g, trapdoor = toy_params_with_trapdoor
+        
+        # Start with some primes
+        initial_primes = [7, 17]
+        A_initial = recompute_root(initial_primes, N, g)
+        
+        # Add a prime
+        new_prime = 13
+        A_after_add = add_member(A_initial, new_prime, N)
+        
+        # Remove the same prime
+        A_after_remove = remove_member(A_after_add, new_prime, N, trapdoor)
+        
+        # Should return to initial state
+        assert A_after_remove == A_initial
+    
+    def test_remove_add_cycle(self, toy_params_with_trapdoor):
+        """Test that removing then adding a prime returns to original state."""
+        N, g, trapdoor = toy_params_with_trapdoor
+        
+        # Start with some primes
+        initial_primes = [7, 13, 17]
+        A_initial = recompute_root(initial_primes, N, g)
+        
+        # Remove a prime
+        prime_to_remove = 13
+        A_after_remove = remove_member(A_initial, prime_to_remove, N, trapdoor)
+        
+        # Add the same prime back
+        A_after_add = add_member(A_after_remove, prime_to_remove, N)
+        
+        # Should return to initial state
+        assert A_after_add == A_initial
+    
+    def test_batch_add_remove_cycle(self, toy_params_with_trapdoor):
+        """Test batch add/remove cycle maintains correctness."""
+        N, g, trapdoor = toy_params_with_trapdoor
+        
+        # Start with some primes
+        initial_primes = [7, 17]
+        A_initial = recompute_root(initial_primes, N, g)
+        
+        # Add multiple primes
+        primes_to_add = [13, 23]
+        A_after_batch_add = A_initial
+        for prime in primes_to_add:
+            A_after_batch_add = add_member(A_after_batch_add, prime, N)
+        
+        # Remove the same primes
+        A_after_batch_remove = batch_remove_members(A_after_batch_add, primes_to_add, N, trapdoor)
+        
+        # Should return to initial state
+        assert A_after_batch_remove == A_initial

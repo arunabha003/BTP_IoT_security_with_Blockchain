@@ -14,7 +14,7 @@ try:
         update_witness_on_addition, update_witness_on_removal
     )
     from accum.accumulator import recompute_root, membership_witness, verify_membership
-    from accum.rsa_params import generate_demo_params
+
 except ImportError:
     import sys
     sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -23,7 +23,17 @@ except ImportError:
         update_witness_on_addition, update_witness_on_removal
     )
     from accumulator import recompute_root, membership_witness, verify_membership
-    from rsa_params import generate_demo_params
+
+
+
+def generate_demo_params():
+    """Generate demo RSA parameters for testing."""
+    # Use small primes for testing
+    p, q = 11, 19
+    N = p * q  # N = 209
+    # Use QR base: g = h^2 mod N (h=2 -> g=4)
+    g = pow(2, 2, N)  # g = 4, ensuring g is in quadratic residue subgroup
+    return N, g
 
 
 class TestWitnessRefresh:
@@ -32,7 +42,7 @@ class TestWitnessRefresh:
     @pytest.fixture
     def toy_params(self):
         """Provide toy RSA parameters for testing."""
-        return generate_demo_params()  # N=209, g=4
+        return generate_demo_params()  # N=209, g=2
     
     def test_refresh_witness_basic(self, toy_params):
         """Test basic witness refresh for a single prime."""
@@ -284,3 +294,147 @@ class TestWitnessRefresh:
         # Final witness should match direct computation
         final_witness_direct = membership_witness(primes, 13, N, g)
         assert current_witness == final_witness_direct
+
+
+class TestWitnessRemovalUpdates:
+    """Test witness updates during member removal operations."""
+    
+    @pytest.fixture
+    def toy_params_with_trapdoor(self):
+        """Provide toy RSA parameters with trapdoor information."""
+        p, q = 11, 19  # Small primes for testing
+        N = p * q  # N = 209
+        g = 2
+        trapdoor = (p, q)
+        return N, g, trapdoor
+    
+    def test_update_witness_on_removal_basic(self, toy_params_with_trapdoor):
+        """Test basic witness update on removal with trapdoor."""
+        N, g, trapdoor = toy_params_with_trapdoor
+        
+        # Create accumulator with primes coprime to λ(N) = 90
+        primes = {7, 13, 17, 23}  # All coprime to 90 = 2 * 3^2 * 5
+        A = recompute_root(primes, N, g)
+        
+        # Get witness for prime 7 before removal
+        primes_without_7 = primes - {7}
+        old_witness = membership_witness(primes_without_7, N, g)
+        assert verify_membership(old_witness, 7, A, N)
+        
+        # Remove prime 13 from the set
+        removed_prime = 13
+        new_primes = primes - {removed_prime}
+        A_new = recompute_root(new_primes, N, g)
+        
+        # Update witness using trapdoor method
+        new_witness = update_witness_on_removal(old_witness, removed_prime, N, trapdoor)
+        
+        # Verify updated witness is correct
+        assert verify_membership(new_witness, 7, A_new, N)
+        
+        # Compare with direct computation
+        new_primes_without_7 = new_primes - {7}
+        expected_witness = membership_witness(new_primes_without_7, N, g)
+        assert new_witness == expected_witness
+    
+    def test_update_witness_on_removal_without_trapdoor(self, toy_params_with_trapdoor):
+        """Test that witness update without trapdoor raises NotImplementedError."""
+        N, g, _ = toy_params_with_trapdoor
+        
+        old_witness = 42  # Some witness value
+        removed_prime = 13
+        
+        with pytest.raises(NotImplementedError, match="Efficient witness update on removal requires trapdoor"):
+            update_witness_on_removal(old_witness, removed_prime, N)  # No trapdoor
+    
+    def test_update_witness_on_removal_problematic_prime(self, toy_params_with_trapdoor):
+        """Test witness update when removing prime that shares factors with λ(N)."""
+        N, g, trapdoor = toy_params_with_trapdoor
+        # λ(N) = 90 = 2 * 3^2 * 5
+        
+        old_witness = 42  # Some witness value
+        removed_prime = 5  # Shares factor with λ(N)
+        
+        # Should fail due to modular inverse not existing
+        with pytest.raises(ValueError, match="Cannot compute modular inverse"):
+            update_witness_on_removal(old_witness, removed_prime, N, trapdoor)
+    
+    def test_witness_update_consistency_across_operations(self, toy_params_with_trapdoor):
+        """Test that witness updates are consistent across add/remove operations."""
+        N, g, trapdoor = toy_params_with_trapdoor
+        
+        # Start with initial set
+        initial_primes = {7, 17, 23}
+        A_initial = recompute_root(initial_primes, N, g)
+        
+        # Get witness for prime 7
+        initial_primes_without_7 = initial_primes - {7}
+        witness_7 = membership_witness(initial_primes_without_7, N, g)
+        assert verify_membership(witness_7, 7, A_initial, N)
+        
+        # Add a prime and update witness
+        added_prime = 13
+        witness_7_after_add = update_witness_on_addition(witness_7, added_prime, N)
+        primes_after_add = initial_primes | {added_prime}
+        A_after_add = recompute_root(primes_after_add, N, g)
+        assert verify_membership(witness_7_after_add, 7, A_after_add, N)
+        
+        # Remove the same prime and update witness back
+        witness_7_after_remove = update_witness_on_removal(witness_7_after_add, added_prime, N, trapdoor)
+        A_after_remove = recompute_root(initial_primes, N, g)
+        assert verify_membership(witness_7_after_remove, 7, A_after_remove, N)
+        
+        # Should be back to original witness
+        assert witness_7_after_remove == witness_7
+        assert A_after_remove == A_initial
+    
+    def test_multiple_witness_updates_on_removal(self, toy_params_with_trapdoor):
+        """Test multiple consecutive witness updates on removal."""
+        N, g, trapdoor = toy_params_with_trapdoor
+        
+        # Start with larger set
+        initial_primes = {7, 11, 13, 17, 23}
+        target_prime = 7
+        
+        # Get initial witness for target prime
+        initial_primes_without_target = initial_primes - {target_prime}
+        current_witness = membership_witness(initial_primes_without_target, N, g)
+        current_primes = initial_primes.copy()
+        
+        # Remove primes one by one and update witness
+        primes_to_remove = [13, 23, 11]
+        
+        for prime_to_remove in primes_to_remove:
+            # Update witness using trapdoor method
+            current_witness = update_witness_on_removal(current_witness, prime_to_remove, N, trapdoor)
+            current_primes.remove(prime_to_remove)
+            
+            # Verify witness is still valid
+            A_current = recompute_root(current_primes, N, g)
+            assert verify_membership(current_witness, target_prime, A_current, N)
+        
+        # Final witness should match direct computation
+        final_primes_without_target = current_primes - {target_prime}
+        final_witness_direct = membership_witness(final_primes_without_target, N, g)
+        assert current_witness == final_witness_direct
+    
+    def test_witness_update_invalid_inputs(self, toy_params_with_trapdoor):
+        """Test witness update with invalid inputs."""
+        N, g, trapdoor = toy_params_with_trapdoor
+        
+        # Invalid witness
+        with pytest.raises(ValueError):
+            update_witness_on_removal(-1, 13, N, trapdoor)
+        
+        # Invalid prime
+        with pytest.raises(ValueError):
+            update_witness_on_removal(42, -1, N, trapdoor)
+        
+        # Invalid N
+        with pytest.raises(ValueError):
+            update_witness_on_removal(42, 13, -1, trapdoor)
+        
+        # Wrong trapdoor factorization
+        wrong_trapdoor = (5, 7)  # 5 * 7 = 35 ≠ 209
+        with pytest.raises(ValueError):
+            update_witness_on_removal(42, 13, N, wrong_trapdoor)
