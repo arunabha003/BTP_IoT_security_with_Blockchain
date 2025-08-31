@@ -157,6 +157,7 @@ contract AccumulatorRegistry {
     /**
      * @dev Update accumulator with enhanced security checks (MULTISIG ONLY)
      */
+    
     function updateAccumulator(
         bytes calldata newAccumulator, 
         bytes32 parentHash,

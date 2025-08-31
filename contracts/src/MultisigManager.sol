@@ -4,11 +4,12 @@ pragma solidity ^0.8.24;
 import {Safe} from "safe-contracts/Safe.sol";
 import {SafeProxyFactory} from "safe-contracts/proxies/SafeProxyFactory.sol";
 import {SafeProxy} from "safe-contracts/proxies/SafeProxy.sol";
+import {Enum} from "safe-contracts/libraries/Enum.sol";
 
 /**
  * @title MultisigManager
  * @dev Advanced multisig management contract for AccumulatorRegistry
- * Provides flexible owner management, threshold changes, and security controls
+ * Provides timelock-protected owner management and threshold changes for Safe multisigs
  */
 contract MultisigManager {
     // Immutable references
@@ -30,21 +31,23 @@ contract MultisigManager {
     address public emergencyAdmin;
     bool public emergencyPaused;
     
+    // Operation nonce for domain separation
+    uint256 public opNonce;
+    
     // Pending operations for timelock
     struct PendingOperation {
         bytes32 operationHash;
         uint256 executeAfter;
         bool executed;
         OperationType opType;
+        bytes params; // abi-encoded exact params
     }
     
     enum OperationType {
         ADD_OWNER,
         REMOVE_OWNER,
         CHANGE_THRESHOLD,
-        REPLACE_SAFE,
-        EMERGENCY_PAUSE,
-        EMERGENCY_UNPAUSE
+        REPLACE_SAFE
     }
     
     mapping(bytes32 => PendingOperation) public pendingOperations;
@@ -72,6 +75,7 @@ contract MultisigManager {
     error NotAuthorized();
     error EmergencyPaused();
     error InvalidTimelock();
+    error ExecutionFailed();
     
     modifier onlySafe() {
         if (msg.sender != address(currentSafe)) revert NotAuthorized();
@@ -157,11 +161,13 @@ contract MultisigManager {
             if (currentOwners[i] == newOwner) revert OwnerAlreadyExists();
         }
         
-        bytes32 operationHash = keccak256(abi.encodePacked(
-            "ADD_OWNER",
-            newOwner,
-            newThreshold,
-            block.timestamp
+        bytes memory params = abi.encode(newOwner, newThreshold);
+        bytes32 operationHash = keccak256(abi.encode(
+            OperationType.ADD_OWNER,
+            params,
+            block.chainid,
+            address(this),
+            ++opNonce
         ));
         
         uint256 executeAfter = block.timestamp + TIMELOCK_DELAY;
@@ -169,7 +175,8 @@ contract MultisigManager {
             operationHash: operationHash,
             executeAfter: executeAfter,
             executed: false,
-            opType: OperationType.ADD_OWNER
+            opType: OperationType.ADD_OWNER,
+            params: params
         });
         
         emit OwnerAdditionQueued(operationHash, newOwner, executeAfter);
@@ -193,11 +200,13 @@ contract MultisigManager {
         }
         if (!ownerFound) revert OwnerNotFound();
         
-        bytes32 operationHash = keccak256(abi.encodePacked(
-            "REMOVE_OWNER",
-            ownerToRemove,
-            newThreshold,
-            block.timestamp
+        bytes memory params = abi.encode(ownerToRemove, newThreshold);
+        bytes32 operationHash = keccak256(abi.encode(
+            OperationType.REMOVE_OWNER,
+            params,
+            block.chainid,
+            address(this),
+            ++opNonce
         ));
         
         uint256 executeAfter = block.timestamp + TIMELOCK_DELAY;
@@ -205,7 +214,8 @@ contract MultisigManager {
             operationHash: operationHash,
             executeAfter: executeAfter,
             executed: false,
-            opType: OperationType.REMOVE_OWNER
+            opType: OperationType.REMOVE_OWNER,
+            params: params
         });
         
         emit OwnerRemovalQueued(operationHash, ownerToRemove, executeAfter);
@@ -218,10 +228,13 @@ contract MultisigManager {
         uint256 ownerCount = currentSafe.getOwners().length;
         if (newThreshold < MIN_THRESHOLD || newThreshold > ownerCount) revert InvalidThreshold();
         
-        bytes32 operationHash = keccak256(abi.encodePacked(
-            "CHANGE_THRESHOLD",
-            newThreshold,
-            block.timestamp
+        bytes memory params = abi.encode(newThreshold);
+        bytes32 operationHash = keccak256(abi.encode(
+            OperationType.CHANGE_THRESHOLD,
+            params,
+            block.chainid,
+            address(this),
+            ++opNonce
         ));
         
         uint256 executeAfter = block.timestamp + TIMELOCK_DELAY;
@@ -229,7 +242,8 @@ contract MultisigManager {
             operationHash: operationHash,
             executeAfter: executeAfter,
             executed: false,
-            opType: OperationType.CHANGE_THRESHOLD
+            opType: OperationType.CHANGE_THRESHOLD,
+            params: params
         });
         
         emit ThresholdChangeQueued(operationHash, newThreshold, executeAfter);
@@ -237,11 +251,9 @@ contract MultisigManager {
     
     /**
      * @dev Execute a pending operation after timelock
+     * This function is called by the Safe owners through a multisig transaction
      */
-    function executeOperation(
-        bytes32 operationHash,
-        bytes memory operationData
-    ) external onlySafe notPaused {
+    function executeOperation(bytes32 operationHash) external onlySafe notPaused {
         PendingOperation storage op = pendingOperations[operationHash];
         if (op.operationHash == bytes32(0)) revert OperationNotFound();
         if (block.timestamp < op.executeAfter) revert OperationNotReady();
@@ -249,14 +261,15 @@ contract MultisigManager {
         
         op.executed = true;
         
+        // Execute the operation based on type
         if (op.opType == OperationType.ADD_OWNER) {
-            (address newOwner, uint256 newThreshold) = abi.decode(operationData, (address, uint256));
+            (address newOwner, uint256 newThreshold) = abi.decode(op.params, (address, uint256));
             _executeAddOwner(newOwner, newThreshold);
         } else if (op.opType == OperationType.REMOVE_OWNER) {
-            (address ownerToRemove, uint256 newThreshold) = abi.decode(operationData, (address, uint256));
+            (address ownerToRemove, uint256 newThreshold) = abi.decode(op.params, (address, uint256));
             _executeRemoveOwner(ownerToRemove, newThreshold);
         } else if (op.opType == OperationType.CHANGE_THRESHOLD) {
-            uint256 newThreshold = abi.decode(operationData, (uint256));
+            (uint256 newThreshold) = abi.decode(op.params, (uint256));
             _executeChangeThreshold(newThreshold);
         }
         
@@ -293,21 +306,79 @@ contract MultisigManager {
     }
     
     // Internal execution functions
-    function _executeAddOwner(address newOwner, uint256 /* newThreshold */) internal {
-        // This would call Safe's addOwnerWithThreshold
-        // Implementation depends on specific Safe version
-        // For now, we emit the event - actual implementation would interact with Safe
-        emit OperationExecuted(keccak256(abi.encodePacked("ADD_OWNER", newOwner)), OperationType.ADD_OWNER);
+    function _executeAddOwner(address newOwner, uint256 newThreshold) internal {
+        // Use Safe's execTransactionFromModule to add owner
+        bytes memory data = abi.encodeWithSignature(
+            "addOwnerWithThreshold(address,uint256)",
+            newOwner,
+            newThreshold
+        );
+        
+        bool success = currentSafe.execTransactionFromModule(
+            address(currentSafe),
+            0,
+            data,
+            Enum.Operation.Call
+        );
+        
+        if (!success) revert ExecutionFailed();
     }
     
-    function _executeRemoveOwner(address ownerToRemove, uint256 /* newThreshold */) internal {
-        // This would call Safe's removeOwner and changeThreshold
-        emit OperationExecuted(keccak256(abi.encodePacked("REMOVE_OWNER", ownerToRemove)), OperationType.REMOVE_OWNER);
+    function _executeRemoveOwner(address ownerToRemove, uint256 newThreshold) internal {
+        // Find the previous owner in the linked list
+        address prevOwner = _findPrevOwner(ownerToRemove);
+        if (prevOwner == address(0)) revert OwnerNotFound();
+        
+        // Use Safe's execTransactionFromModule to remove owner
+        bytes memory data = abi.encodeWithSignature(
+            "removeOwner(address,address,uint256)",
+            prevOwner,
+            ownerToRemove,
+            newThreshold
+        );
+        
+        bool success = currentSafe.execTransactionFromModule(
+            address(currentSafe),
+            0,
+            data,
+            Enum.Operation.Call
+        );
+        
+        if (!success) revert ExecutionFailed();
     }
     
     function _executeChangeThreshold(uint256 newThreshold) internal {
-        // This would call Safe's changeThreshold
-        emit OperationExecuted(keccak256(abi.encodePacked("CHANGE_THRESHOLD", newThreshold)), OperationType.CHANGE_THRESHOLD);
+        // Use Safe's execTransactionFromModule to change threshold
+        bytes memory data = abi.encodeWithSignature(
+            "changeThreshold(uint256)",
+            newThreshold
+        );
+        
+        bool success = currentSafe.execTransactionFromModule(
+            address(currentSafe),
+            0,
+            data,
+            Enum.Operation.Call
+        );
+        
+        if (!success) revert ExecutionFailed();
+    }
+    
+    /**
+     * @dev Find the previous owner in the Safe's linked list structure
+     */
+    function _findPrevOwner(address owner) internal view returns (address prevOwner) {
+        address[] memory owners = currentSafe.getOwners();
+        address SENTINEL = address(0x0000000000000000000000000000000000000001);
+        
+        if (owners.length == 0) return address(0);
+        if (owners[0] == owner) return SENTINEL;
+        
+        for (uint256 i = 0; i + 1 < owners.length; i++) {
+            if (owners[i + 1] == owner) return owners[i];
+        }
+        
+        return address(0);
     }
     
     // View functions
@@ -337,5 +408,14 @@ contract MultisigManager {
         ready = block.timestamp >= op.executeAfter;
         executeAfter = op.executeAfter;
         opType = op.opType;
+    }
+    
+    /**
+     * @dev Get operation data for execution
+     */
+    function getOperationData(bytes32 operationHash) external view returns (bytes memory) {
+        PendingOperation storage op = pendingOperations[operationHash];
+        if (op.operationHash == bytes32(0)) revert OperationNotFound();
+        return op.params;
     }
 }

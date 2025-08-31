@@ -2,11 +2,10 @@
 pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
-import {AccumulatorRegistry} from "src/AccumulatorRegistry.sol";
-import {MultisigManager} from "src/MultisigManager.sol";
+import {AccumulatorRegistry} from "../src/AccumulatorRegistry.sol";
+import {MultisigManager} from "../src/MultisigManager.sol";
 import {Safe} from "safe-contracts/Safe.sol";
 import {SafeProxyFactory} from "safe-contracts/proxies/SafeProxyFactory.sol";
-// SafeProxy import removed as unused in tests
 import {Enum} from "safe-contracts/libraries/Enum.sol";
 
 contract SecureMultisigTest is Test {
@@ -55,6 +54,10 @@ contract SecureMultisigTest is Test {
         uint256 indexed newVersion,
         address indexed executor
     );
+    event OwnerAdditionQueued(bytes32 indexed operationHash, address indexed newOwner, uint256 executeAfter);
+    event OwnerRemovalQueued(bytes32 indexed operationHash, address indexed owner, uint256 executeAfter);
+    event ThresholdChangeQueued(bytes32 indexed operationHash, uint256 newThreshold, uint256 executeAfter);
+    event OperationExecuted(bytes32 indexed operationHash, MultisigManager.OperationType opType);
     
     function setUp() public {
         // Setup owners array
@@ -79,6 +82,15 @@ contract SecureMultisigTest is Test {
         address safeAddr = manager.deploySafe(owners, 3);
         safe = Safe(payable(safeAddr));
         
+        // Enable MultisigManager as a module on the Safe
+        bytes memory enableModuleData = abi.encodeWithSignature(
+            "enableModule(address)",
+            address(manager)
+        );
+
+        bool moduleEnabled = executeSafeTransaction(safeAddr, enableModuleData);
+        assertTrue(moduleEnabled, "Failed to enable MultisigManager as module");
+        
         // Deploy AccumulatorRegistry
         bytes memory initialAccumulator = abi.encodePacked(bytes32(uint256(1)));
         registry = new AccumulatorRegistry(
@@ -88,7 +100,7 @@ contract SecureMultisigTest is Test {
         );
     }
     
-    function testInitialState() public {
+    function testInitialState() public view {
         // Test registry state
         assertEq(address(registry.authorizedSafe()), address(safe));
         assertEq(address(registry.multisigManager()), address(manager));
@@ -327,14 +339,209 @@ contract SecureMultisigTest is Test {
         assertEq(registry.version(), 2);
     }
     
-    // Helper function to execute Safe transactions
+    function testMultisigManagerTimelockedOperations() public {
+        // Test queueing and executing owner addition
+        address newOwner = vm.addr(100);
+        uint256 newThreshold = 4;
+        
+        // Queue add owner operation
+        bytes memory queueData = abi.encodeWithSignature(
+            "queueAddOwner(address,uint256)",
+            newOwner,
+            newThreshold
+        );
+        
+        // Calculate expected operation hash
+        bytes memory params = abi.encode(newOwner, newThreshold);
+        bytes32 expectedHash = keccak256(abi.encode(
+            MultisigManager.OperationType.ADD_OWNER,
+            params,
+            block.chainid,
+            address(manager),
+            1 // This will be the first operation, so nonce = 1
+        ));
+        
+        vm.expectEmit(true, true, false, true);
+        emit OwnerAdditionQueued(expectedHash, newOwner, block.timestamp + 24 hours);
+        
+        bool success = executeSafeTransaction(address(manager), queueData);
+        assertTrue(success, "Failed to queue add owner operation");
+        
+        // Verify operation nonce incremented
+        assertEq(manager.opNonce(), 1);
+        
+        // Try to execute before timelock expires (should fail)
+        bytes memory executeData = abi.encodeWithSignature(
+            "executeOperation(bytes32)",
+            expectedHash
+        );
+        
+        success = executeSafeTransaction(address(manager), executeData);
+        assertFalse(success, "Should not execute before timelock expires");
+        
+        // Fast forward time past timelock
+        vm.warp(block.timestamp + 24 hours + 1);
+        
+        // Now execution should succeed
+        vm.expectEmit(true, false, false, true);
+        emit OperationExecuted(expectedHash, MultisigManager.OperationType.ADD_OWNER);
+        
+        success = executeSafeTransaction(address(manager), executeData);
+        assertTrue(success, "Failed to execute add owner operation after timelock");
+        
+        // Verify the owner was added and threshold changed
+        address[] memory updatedOwners = safe.getOwners();
+        assertEq(updatedOwners.length, 6, "Owner count should be 6");
+        assertEq(safe.getThreshold(), 4, "Threshold should be 4");
+        
+        // Verify new owner is in the list
+        bool newOwnerFound = false;
+        for (uint256 i = 0; i < updatedOwners.length; i++) {
+            if (updatedOwners[i] == newOwner) {
+                newOwnerFound = true;
+                break;
+            }
+        }
+        assertTrue(newOwnerFound, "New owner should be in owners list");
+    }
+    
+    function testMultisigManagerChangeThreshold() public {
+        // Test threshold change
+        uint256 newThreshold = 4;
+        
+        // Queue threshold change
+        bytes memory queueData = abi.encodeWithSignature(
+            "queueChangeThreshold(uint256)",
+            newThreshold
+        );
+        
+        // Calculate expected operation hash
+        bytes memory params = abi.encode(newThreshold);
+        bytes32 expectedHash = keccak256(abi.encode(
+            MultisigManager.OperationType.CHANGE_THRESHOLD,
+            params,
+            block.chainid,
+            address(manager),
+            1 // First operation
+        ));
+        
+        vm.expectEmit(true, false, false, true);
+        emit ThresholdChangeQueued(expectedHash, newThreshold, block.timestamp + 24 hours);
+        
+        bool success = executeSafeTransaction(address(manager), queueData);
+        assertTrue(success, "Failed to queue threshold change");
+        
+        // Execute after timelock
+        vm.warp(block.timestamp + 24 hours + 1);
+        
+        bytes memory executeData = abi.encodeWithSignature(
+            "executeOperation(bytes32)",
+            expectedHash
+        );
+        
+        vm.expectEmit(true, false, false, true);
+        emit OperationExecuted(expectedHash, MultisigManager.OperationType.CHANGE_THRESHOLD);
+        
+        success = executeSafeTransaction(address(manager), executeData);
+        assertTrue(success, "Failed to execute threshold change");
+        
+        // Verify threshold changed
+        assertEq(safe.getThreshold(), newThreshold, "Threshold should be updated");
+    }
+    
+    function testMultisigManagerEmergencyControls() public {
+        // Test emergency pause
+        vm.prank(emergencyAdmin);
+        manager.toggleEmergencyPause();
+        assertTrue(manager.emergencyPaused(), "Should be paused");
+        
+        // Test that queuing operations fails when paused
+        bytes memory queueData = abi.encodeWithSignature(
+            "queueChangeThreshold(uint256)",
+            4
+        );
+        
+        // Should fail due to emergency pause (the helper catches reverts and returns false)
+        bool success = executeSafeTransaction(address(manager), queueData);
+        assertFalse(success, "Should fail when paused");
+        
+        // Test emergency operation cancellation
+        vm.prank(emergencyAdmin);
+        manager.toggleEmergencyPause(); // Unpause
+        
+        // Queue an operation
+        bool success2 = executeSafeTransaction(address(manager), queueData);
+        assertTrue(success2, "Should be able to queue when unpaused");
+        
+        // Calculate operation hash to cancel
+        bytes memory params = abi.encode(uint256(4));
+        bytes32 operationHash = keccak256(abi.encode(
+            MultisigManager.OperationType.CHANGE_THRESHOLD,
+            params,
+            block.chainid,
+            address(manager),
+            1
+        ));
+        
+        // Emergency admin can cancel
+        vm.prank(emergencyAdmin);
+        manager.cancelOperation(operationHash);
+        
+        // Verify operation was cancelled
+        (bool exists,,,, ) = manager.getOperationStatus(operationHash);
+        assertFalse(exists, "Operation should be cancelled");
+    }
+    
+    function testMultisigManagerDomainSeparation() public {
+        // Test that operation hashes include domain separation
+        uint256 initialNonce = manager.opNonce();
+        
+        // Queue two identical operations
+        bytes memory queueData = abi.encodeWithSignature(
+            "queueChangeThreshold(uint256)",
+            4
+        );
+        
+        executeSafeTransaction(address(manager), queueData);
+        uint256 firstNonce = manager.opNonce();
+        
+        executeSafeTransaction(address(manager), queueData);
+        uint256 secondNonce = manager.opNonce();
+        
+        // Nonces should be different
+        assertEq(firstNonce, initialNonce + 1, "First nonce should increment");
+        assertEq(secondNonce, initialNonce + 2, "Second nonce should increment");
+        
+        // Operation hashes should be different due to nonce
+        bytes memory params = abi.encode(uint256(4));
+        
+        bytes32 firstHash = keccak256(abi.encode(
+            MultisigManager.OperationType.CHANGE_THRESHOLD,
+            params,
+            block.chainid,
+            address(manager),
+            firstNonce
+        ));
+        
+        bytes32 secondHash = keccak256(abi.encode(
+            MultisigManager.OperationType.CHANGE_THRESHOLD,
+            params,
+            block.chainid,
+            address(manager),
+            secondNonce
+        ));
+        
+        assertTrue(firstHash != secondHash, "Operation hashes should be different");
+    }
+    
+    // Helper function to execute Safe transactions with proper signature handling
     function executeSafeTransaction(
         address to,
         bytes memory data
     ) internal returns (bool success) {
         uint256 nonce = safe.nonce();
         
-        // Build transaction hash for signing
+        // Build transaction hash for signing //EIP712 hash
         bytes32 txHash = safe.getTransactionHash(
             to,
             0,
@@ -349,13 +556,13 @@ contract SecureMultisigTest is Test {
         );
         
         // Generate signatures from 3 owners (meets threshold)
-        // Sort signatures by signer address
+        // Sort signers by address for Safe compatibility
         address[] memory signers = new address[](3);
         signers[0] = owner1;
         signers[1] = owner2;
         signers[2] = owner3;
         
-        // Sort signers
+        // Sort signers by address
         for (uint256 i = 0; i < signers.length - 1; i++) {
             for (uint256 j = i + 1; j < signers.length; j++) {
                 if (signers[i] > signers[j]) {
@@ -372,6 +579,8 @@ contract SecureMultisigTest is Test {
             if (signers[i] == owner1) key = owner1Key;
             else if (signers[i] == owner2) key = owner2Key;
             else if (signers[i] == owner3) key = owner3Key;
+            else if (signers[i] == owner4) key = owner4Key;
+            else if (signers[i] == owner5) key = owner5Key;
             
             (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, txHash);
             signatures = abi.encodePacked(signatures, r, s, v);
