@@ -5,12 +5,14 @@ Handles updating membership witnesses when the accumulator changes
 due to additions or removals of other members.
 """
 
-from typing import Set
+from typing import Set, Optional, Tuple
 
 try:
     from .accumulator import recompute_root
+    from .trapdoor_operations import trapdoor_remove_member
 except ImportError:
     from accumulator import recompute_root
+    from trapdoor_operations import trapdoor_remove_member
 
 
 def refresh_witness(target_p: int, set_primes: Set[int], N: int, g: int) -> int:
@@ -115,7 +117,7 @@ def update_witness_on_addition(old_witness: int, added_prime: int, N: int) -> in
     return pow(old_witness, added_prime, N)
 
 
-def update_witness_on_removal(old_witness: int, removed_prime: int, N: int) -> int:
+def update_witness_on_removal(old_witness: int, removed_prime: int, N: int, trapdoor: Optional[Tuple[int, int]] = None) -> int:
     """
     Update an existing witness when a prime is removed from the set.
 
@@ -126,24 +128,38 @@ def update_witness_on_removal(old_witness: int, removed_prime: int, N: int) -> i
         old_witness: Existing witness before removal
         removed_prime: The prime that was just removed from the set
         N: RSA modulus
+        trapdoor: Optional tuple (p_factor, q_factor) where N = p_factor * q_factor
 
     Returns:
         int: Updated witness after removal
 
     Raises:
-        NotImplementedError: Removal without trapdoor not implemented
+        NotImplementedError: If removal without trapdoor is attempted
+        ValueError: If inputs are invalid or operation is impossible
 
     Note:
-        This requires computing modular inverse, which needs either:
-        1. Factorization of N (trapdoor), or
-        2. Extended Euclidean algorithm (if gcd(removed_prime, φ(N)) = 1)
-
-        For simplicity, we recommend using refresh_witness() instead.
+        With trapdoor: Efficient O(log N) witness update using modular inverse
+        Without trapdoor: Must use refresh_witness() or batch_refresh_witnesses()
+        
+    Example:
+        >>> # With trapdoor (efficient)
+        >>> new_witness = update_witness_on_removal(old_witness, removed_prime, N, trapdoor=(p, q))
+        >>> 
+        >>> # Without trapdoor (fallback to full refresh)
+        >>> new_witness = refresh_witness(target_prime, updated_set, N, g)
     """
-    raise NotImplementedError(
-        "Efficient witness update on removal requires trapdoor information. "
-        "Use refresh_witness() or batch_refresh_witnesses() instead."
-    )
+    if trapdoor is None:
+        raise NotImplementedError(
+            "Efficient witness update on removal requires trapdoor information. "
+            "Provide trapdoor=(p_factor, q_factor) or use refresh_witness() instead."
+        )
+
+    # Extract trapdoor factors
+    p_factor, q_factor = trapdoor
+    
+    # Use trapdoor-based removal on the witness
+    # This computes old_witness^(1/removed_prime) mod N
+    return trapdoor_remove_member(old_witness, removed_prime, N, p_factor, q_factor)
 
 
 def _test_witness_refresh() -> None:

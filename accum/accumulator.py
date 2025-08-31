@@ -5,8 +5,13 @@ Implements the fundamental RSA accumulator operations for membership
 proofs and accumulator updates.
 """
 
-from typing import Iterable
+from typing import Iterable, Optional, Tuple
 from functools import reduce
+
+try:
+    from .trapdoor_operations import trapdoor_remove_member, trapdoor_batch_remove_members
+except ImportError:
+    from trapdoor_operations import trapdoor_remove_member, trapdoor_batch_remove_members
 
 
 def add_member(A: int, p: int, N: int) -> int:
@@ -104,7 +109,6 @@ def membership_witness(primes_without_p: Iterable[int], N: int, g: int) -> int:
         g: Generator base
 
     Returns:
-        int: Witness value for the missing prime
 
     Example:
         >>> # If set is {3, 5, 7} and we want witness for 5
@@ -118,7 +122,7 @@ def verify_membership(w: int, p: int, A: int, N: int) -> bool:
     """
     Verify that prime p is a member of accumulator A using witness w.
 
-    Verification equation: w^p ≡ A (mod N)
+    Verification equation: w^p ≡ A (mod N) or A = w^p mod N
 
     Args:
         w: Membership witness for prime p
@@ -144,30 +148,38 @@ def verify_membership(w: int, p: int, A: int, N: int) -> bool:
     return pow(w, p, N) == A
 
 
-def remove_member(A: int, p: int, N: int) -> int:
+def remove_member(A: int, p: int, N: int, trapdoor: Optional[Tuple[int, int]] = None) -> int:
     """
     Remove a member (prime p) from the accumulator A.
 
     This requires computing the modular inverse: A^(1/p) mod N
-    In practice, this requires knowledge of the factorization of N
-    or the use of witnesses from other members.
+    With trapdoor information (factorization of N), this can be done efficiently.
+    Without trapdoor, recomputation from remaining set is recommended.
 
     Args:
         A: Current accumulator value
         p: Prime representing the member to remove
         N: RSA modulus
+        trapdoor: Optional tuple (p_factor, q_factor) where N = p_factor * q_factor
 
     Returns:
         int: New accumulator value after removing member p
 
     Raises:
         ValueError: If inputs are invalid
-        NotImplementedError: Removal without trapdoor not implemented
+        NotImplementedError: If removal without trapdoor is attempted
 
     Note:
-        This is a simplified interface. In practice, removal either requires:
-        1. Knowledge of N's factorization (trapdoor), or
-        2. Recomputation from the remaining set (what we do in practice)
+        With trapdoor: Efficient O(log N) removal using modular inverse
+        Without trapdoor: Must use recompute_root() with updated prime set
+        
+    Example:
+        >>> # With trapdoor (efficient)
+        >>> A_new = remove_member(A, prime, N, trapdoor=(p_factor, q_factor))
+        >>> 
+        >>> # Without trapdoor (fallback to recomputation)
+        >>> remaining_primes = [p for p in original_primes if p != prime_to_remove]
+        >>> A_new = recompute_root(remaining_primes, N, g)
     """
     if A <= 0 or p <= 0 or N <= 0:
         raise ValueError("All parameters must be positive")
@@ -175,12 +187,18 @@ def remove_member(A: int, p: int, N: int) -> int:
     if p >= N:
         raise ValueError("Prime p must be less than modulus N")
 
-    # For now, we don't implement trapdoor-based removal
-    # In practice, we recompute the accumulator from scratch
-    raise NotImplementedError(
-        "Direct removal requires trapdoor (factorization of N). "
-        "Use recompute_root() with the updated prime set instead."
-    )
+    if trapdoor is None:
+        raise NotImplementedError(
+            "Direct removal requires trapdoor (factorization of N). "
+            "Provide trapdoor=(p_factor, q_factor) or use recompute_root() "
+            "with the updated prime set instead."
+        )
+
+    # Extract trapdoor factors
+    p_factor, q_factor = trapdoor
+    
+    # Use trapdoor-based removal
+    return trapdoor_remove_member(A, p, N, p_factor, q_factor)
 
 
 def batch_add_members(A: int, primes: Iterable[int], N: int) -> int:
@@ -205,6 +223,52 @@ def batch_add_members(A: int, primes: Iterable[int], N: int) -> int:
     product = reduce(lambda x, y: x * y, prime_list, 1)
 
     return pow(A, product, N)
+
+
+def batch_remove_members(A: int, primes: Iterable[int], N: int, trapdoor: Optional[Tuple[int, int]] = None) -> int:
+    """
+    Efficiently remove multiple members from the accumulator.
+
+    With trapdoor information, computes: A^(1/product of primes) mod N
+    Without trapdoor, falls back to recomputation from remaining set.
+
+    Args:
+        A: Current accumulator value
+        primes: Iterable of primes to remove
+        N: RSA modulus
+        trapdoor: Optional tuple (p_factor, q_factor) where N = p_factor * q_factor
+
+    Returns:
+        int: New accumulator value after removing all primes
+
+    Raises:
+        ValueError: If inputs are invalid
+        NotImplementedError: If removal without trapdoor is attempted
+        
+    Example:
+        >>> # With trapdoor (efficient)
+        >>> A_new = batch_remove_members(A, [prime1, prime2], N, trapdoor=(p, q))
+        >>> 
+        >>> # Without trapdoor (fallback to recomputation)
+        >>> remaining_primes = [p for p in original_primes if p not in primes_to_remove]
+        >>> A_new = recompute_root(remaining_primes, N, g)
+    """
+    prime_list = list(primes)
+    if not prime_list:
+        return A
+
+    if trapdoor is None:
+        raise NotImplementedError(
+            "Batch removal requires trapdoor (factorization of N). "
+            "Provide trapdoor=(p_factor, q_factor) or use recompute_root() "
+            "with the updated prime set instead."
+        )
+
+    # Extract trapdoor factors
+    p_factor, q_factor = trapdoor
+    
+    # Use trapdoor-based batch removal
+    return trapdoor_batch_remove_members(A, prime_list, N, p_factor, q_factor)
 
 
 def _test_accumulator_operations() -> None:
