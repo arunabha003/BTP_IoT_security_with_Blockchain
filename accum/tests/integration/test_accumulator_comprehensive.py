@@ -328,8 +328,8 @@ class TestErrorConditions:
         with pytest.raises(ValueError):
             add_member(2, 0, 35)  # p <= 0
 
-        with pytest.raises(ValueError):
-            add_member(2, 40, 35)  # p >= N
+        # Note: p >= N constraint removed - this should now work
+        # add_member(2, 40, 35) would now succeed
 
         # Test recompute_root with invalid params
         with pytest.raises(ValueError):

@@ -42,9 +42,6 @@ def add_member(A: int, p: int, N: int) -> int:
     if A <= 0 or p <= 0 or N <= 0:
         raise ValueError("All parameters must be positive")
 
-    if p >= N:
-        raise ValueError("Prime p must be less than modulus N")
-
     return pow(A, p, N)
 
 
@@ -166,7 +163,7 @@ def verify_membership(w: int, p: int, A: int, N: int) -> bool:
     if w <= 0 or p <= 0 or A <= 0 or N <= 0:
         return False
 
-    if p >= N or w >= N or A >= N:
+    if w >= N or A >= N:
         return False
 
     # Check if w^p ≡ A (mod N)
@@ -208,9 +205,6 @@ def remove_member(A: int, p: int, N: int, trapdoor: Optional[Tuple[int, int]] = 
     """
     if A <= 0 or p <= 0 or N <= 0:
         raise ValueError("All parameters must be positive")
-
-    if p >= N:
-        raise ValueError("Prime p must be less than modulus N")
 
     if trapdoor is None:
         raise NotImplementedError(

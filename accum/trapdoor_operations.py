@@ -179,10 +179,7 @@ def trapdoor_remove_member(A: int, prime: int, N: int, p: int, q: int) -> int:
     
     if p * q != N:
         raise ValueError("N must equal p * q")
-    
-    if prime >= N:
-        raise ValueError("Prime must be less than N")
-    
+
     if not (1 <= A < N):
         raise ValueError("Accumulator A must be in [1, N-1]")
     
@@ -289,10 +286,7 @@ def validate_prime_for_accumulator(prime: int, N: int, p: int, q: int) -> None:
     """
     if prime <= 0:
         raise ValueError("Prime must be positive")
-    
-    if prime >= N:
-        raise ValueError("Prime must be less than N")
-    
+
     if p * q != N:
         raise ValueError("N must equal p * q")
     
@@ -387,7 +381,7 @@ def trapdoor_batch_remove_members_with_lambda(A: int, primes_to_remove: list[int
         raise ValueError("Accumulator A must be coprime to N (in Z*_N)")
     prod = 1
     for x in primes_to_remove:
-        if x <= 0 or x >= N:
+        if x <= 0:
             raise ValueError(f"Invalid prime: {x}")
         if math.gcd(x, lambda_n) != 1:
             raise ValueError(f"Prime {x} not coprime with λ(N)")

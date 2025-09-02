@@ -401,11 +401,9 @@ class TestPrimeValidation:
         with pytest.raises(ValueError, match="Prime must be positive"):
             validate_prime_for_accumulator(-1, N, p, q)
         
-        with pytest.raises(ValueError, match="Prime must be less than N"):
-            validate_prime_for_accumulator(N, N, p, q)
-        
-        with pytest.raises(ValueError, match="Prime must be less than N"):
-            validate_prime_for_accumulator(N + 1, N, p, q)
+        # Note: p >= N constraint removed - these should now pass
+        # validate_prime_for_accumulator(N, N, p, q)  # Would pass now
+        # validate_prime_for_accumulator(N + 1, N, p, q)  # Would pass now
         
         # Wrong factorization
         with pytest.raises(ValueError, match="N must equal p \\* q"):
