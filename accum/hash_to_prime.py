@@ -131,6 +131,16 @@ def _test_hash_to_prime() -> None:
         b"\x00" * 32,  # All zeros
         b"\xff" * 32,  # All ones
         b"Ed25519_public_key_example_12345678"[:32],  # Realistic Ed25519 key
+        # Real 2048-bit RSA public key in PEM format (base64 decoded)
+        b'''-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2aGRQGPK2KJvMBoaprhM
+0v90365hdh/wgjV8WQ4XnFgsjMDRUKg1ySIH6e2vP2IXoMfcePVXFZdBRAftCm/V
+XF9WJR6u43Xh5a2ehZBZuqAqb4EmdeAcpQRG7vgLyKrYfJVA1awVEKMvzkpgW3Sj
+uXr91CyKS/UI6Key0g/DfUKHA8yP/PxEclF05QE+IXpXBdrVt6CCGY+gTG+u+r3W
+G0NoS5JidNuCcKGpNVa8qnq+sdm4zGB9SyfzE4wb6B57rni/dTy0L1bZ+I/3eW7h
+xL3JO/UhrpjKJG/Diuj2KmDAdTJzBMjb2HIt+QMfJKY6u4/r7myHvF6BE4UM2Bqe
+fQIDAQAB
+-----END PUBLIC KEY-----''',
     ]
 
     print("Testing hash_to_prime function:")
