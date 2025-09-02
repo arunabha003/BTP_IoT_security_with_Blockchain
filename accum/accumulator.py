@@ -5,7 +5,7 @@ Implements the fundamental RSA accumulator operations for membership
 proofs and accumulator updates.
 """
 
-from typing import Iterable, Optional, Tuple
+from typing import Iterable, Optional, Tuple, Set
 from functools import reduce
 
 try:
@@ -52,7 +52,7 @@ def recompute_root(primes: Iterable[int], N: int, g: int) -> int:
     """
     Recompute accumulator root from scratch given a set of primes.
 
-    Computes: g^(product of all primes) mod N
+    Uses iterative modular exponentiation to avoid huge intermediate exponents.
 
     Args:
         primes: Iterable of prime numbers to include in accumulator
@@ -70,7 +70,7 @@ def recompute_root(primes: Iterable[int], N: int, g: int) -> int:
         >>> N = 35
         >>> g = 2
         >>> root = recompute_root(primes, N, g)
-        >>> # root = g^(3*5*7) mod N = 2^105 mod 35
+        >>> # root = ((g^3)^5)^7 mod N = 2^105 mod 35
     """
     if N <= 0 or g <= 0:
         raise ValueError("N and g must be positive")
@@ -82,40 +82,65 @@ def recompute_root(primes: Iterable[int], N: int, g: int) -> int:
     if not prime_list:
         return g  # Empty set -> just the generator
 
-    # Check all primes are valid
+    # Start with generator as accumulator
+    A = g
+
+    # Iteratively add each prime using modular exponentiation
     for p in prime_list:
         if p <= 0:
             raise ValueError("All primes must be positive")
-        if p >= N:
-            raise ValueError(f"Prime {p} must be less than modulus N")
+        # Note: Removed p >= N check as it's not mathematically necessary for exponents
+        A = pow(A, p, N)
 
-    # Compute product of all primes
-    product = reduce(lambda x, y: x * y, prime_list, 1)
-
-    # Return g^product mod N
-    return pow(g, product, N)
+    return A
 
 
-def membership_witness(primes_without_p: Iterable[int], N: int, g: int) -> int:
+def membership_witness(current_primes: Set[int], target_p: int, N: int, g: int) -> int:
     """
-    Compute membership witness for a prime p.
+    Compute membership witness for a target prime p.
 
     The witness is the accumulator value for all primes except p:
     w = g^(product of primes_without_p) mod N
 
+    If p is in current_primes, excludes p from the witness computation.
+    If p is not in current_primes, uses all current_primes for the witness.
+    For a single member (when current_primes is empty), the witness is g.
+
     Args:
-        primes_without_p: All primes in the set except the target prime p
+        current_primes: Complete set of primes in the accumulator
+        target_p: The prime for which to generate the witness
         N: RSA modulus
         g: Generator base
 
     Returns:
+        int: Membership witness for target_p
 
     Example:
         >>> # If set is {3, 5, 7} and we want witness for 5
-        >>> witness = membership_witness([3, 7], N, g)
+        >>> witness = membership_witness({3, 5, 7}, 5, N, g)
         >>> # witness = g^(3*7) mod N
+        >>> # For prime not in set (potential witness):
+        >>> witness = membership_witness({3, 5, 7}, 11, N, g)
+        >>> # witness = g^(3*5*7) mod N
+        >>> # For single member case:
+        >>> witness = membership_witness(set(), 13, N, g)
+        >>> # witness = g
     """
-    return recompute_root(primes_without_p, N, g)
+    # Validate inputs
+    if N <= 0 or g <= 0:
+        raise ValueError("N and g must be positive")
+    if g >= N:
+        raise ValueError("Generator g must be less than modulus N")
+    if target_p <= 1:
+        raise ValueError(f"Target prime {target_p} must be greater than 1")
+
+    # Special case: single member (empty set)
+    if not current_primes:
+        return g
+
+    # Create set from current_primes and subtract target if present
+    S = set(current_primes)
+    return recompute_root(S - {target_p} if target_p in S else S, N, g)
 
 
 def verify_membership(w: int, p: int, A: int, N: int) -> bool:
@@ -205,7 +230,7 @@ def batch_add_members(A: int, primes: Iterable[int], N: int) -> int:
     """
     Efficiently add multiple members to the accumulator.
 
-    Computes: A^(product of primes) mod N
+    Uses iterative modular exponentiation to avoid huge intermediate exponents.
 
     Args:
         A: Current accumulator value
@@ -219,10 +244,14 @@ def batch_add_members(A: int, primes: Iterable[int], N: int) -> int:
     if not prime_list:
         return A
 
-    # Compute product of all primes to add
-    product = reduce(lambda x, y: x * y, prime_list, 1)
+    # Iteratively add each prime using modular exponentiation
+    for p in prime_list:
+        if p <= 0:
+            raise ValueError("All primes must be positive")
+        # Note: Removed p >= N check as it's not mathematically necessary for exponents
+        A = pow(A, p, N)
 
-    return pow(A, product, N)
+    return A
 
 
 def batch_remove_members(A: int, primes: Iterable[int], N: int, trapdoor: Optional[Tuple[int, int]] = None) -> int:
@@ -303,13 +332,13 @@ def _test_accumulator_operations() -> None:
     print("\n3. Testing membership witness/verification:")
 
     # Witness for p1 (exclude p1, include p2)
-    w1 = membership_witness([p2], N, g)
+    w1 = membership_witness({p1, p2}, p1, N, g)
     is_member_1 = verify_membership(w1, p1, A2, N)
     print(f"   witness for {p1}: {w1}")
     print(f"   verify_membership({w1}, {p1}, {A2}, {N}) = {is_member_1}")
 
     # Witness for p2 (exclude p2, include p1)
-    w2 = membership_witness([p1], N, g)
+    w2 = membership_witness({p1, p2}, p2, N, g)
     is_member_2 = verify_membership(w2, p2, A2, N)
     print(f"   witness for {p2}: {w2}")
     print(f"   verify_membership({w2}, {p2}, {A2}, {N}) = {is_member_2}")
@@ -317,7 +346,7 @@ def _test_accumulator_operations() -> None:
     # Test 5: Non-member verification (should fail)
     print("\n4. Testing non-member verification:")
     p_fake = 13
-    w_fake = membership_witness([p1, p2], N, g)  # Witness without p_fake
+    w_fake = membership_witness({p1, p2}, p_fake, N, g)  # Witness without p_fake
     is_member_fake = verify_membership(w_fake, p_fake, A2, N)
     print(f"   verify_membership for non-member {p_fake}: {is_member_fake}")
 

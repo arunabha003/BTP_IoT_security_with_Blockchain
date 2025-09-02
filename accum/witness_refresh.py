@@ -5,7 +5,7 @@ Handles updating membership witnesses when the accumulator changes
 due to additions or removals of other members.
 """
 
-from typing import Set, Optional, Tuple
+from typing import Set, Optional, Tuple, List, Dict
 
 try:
     from .accumulator import recompute_root
@@ -44,14 +44,23 @@ def refresh_witness(target_p: int, set_primes: Set[int], N: int, g: int) -> int:
         >>> new_witness = refresh_witness(5, new_set, N, g)
         >>> # new_witness = g^(3*7*11) mod N
     """
-    if target_p not in set_primes:
-        raise ValueError(f"Target prime {target_p} not found in set_primes")
-
     if N <= 0 or g <= 0:
         raise ValueError("N and g must be positive")
 
-    if target_p <= 0:
-        raise ValueError("target_p must be positive")
+    if target_p <= 1:
+        raise ValueError(f"Target prime {target_p} must be greater than 1")
+
+    # Special case: empty set
+    if not set_primes:
+        return g
+
+    # Validate all primes in set are positive
+    for prime in set_primes:
+        if prime <= 1:
+            raise ValueError("All primes must be greater than 1")
+
+    if target_p not in set_primes:
+        raise ValueError(f"Target prime {target_p} not found in set_primes")
 
     # Create set without target prime
     primes_without_target = set_primes - {target_p}
@@ -60,7 +69,7 @@ def refresh_witness(target_p: int, set_primes: Set[int], N: int, g: int) -> int:
     return recompute_root(primes_without_target, N, g)
 
 
-def batch_refresh_witnesses(set_primes: Set[int], N: int, g: int) -> dict[int, int]:
+def batch_refresh_witnesses(set_primes: Set[int], N: int, g: int) -> Dict[int, int]:
     """
     Refresh witnesses for all members in the current set.
 
@@ -73,7 +82,7 @@ def batch_refresh_witnesses(set_primes: Set[int], N: int, g: int) -> dict[int, i
         g: Generator base
 
     Returns:
-        dict[int, int]: Mapping from prime -> witness
+        Dict[int, int]: Mapping from prime -> witness
 
     Example:
         >>> current_set = {3, 5, 7, 11}
@@ -83,6 +92,11 @@ def batch_refresh_witnesses(set_primes: Set[int], N: int, g: int) -> dict[int, i
     """
     if N <= 0 or g <= 0:
         raise ValueError("N and g must be positive")
+
+    # Validate all primes in set are positive
+    for prime in set_primes:
+        if prime <= 1:
+            raise ValueError("All primes must be greater than 1")
 
     witnesses = {}
 
@@ -148,6 +162,9 @@ def update_witness_on_removal(old_witness: int, removed_prime: int, N: int, trap
         >>> # Without trapdoor (fallback to full refresh)
         >>> new_witness = refresh_witness(target_prime, updated_set, N, g)
     """
+    if old_witness <= 0 or removed_prime <= 0 or N <= 0:
+        raise ValueError("All parameters must be positive")
+
     if trapdoor is None:
         raise NotImplementedError(
             "Efficient witness update on removal requires trapdoor information. "

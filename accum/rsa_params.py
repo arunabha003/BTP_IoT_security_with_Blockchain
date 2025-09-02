@@ -6,6 +6,7 @@ for accumulator operations.
 """
 
 import json
+import math
 from pathlib import Path
 from typing import Tuple
 
@@ -46,17 +47,25 @@ def load_params() -> Tuple[int, int]:
         if g_int >= N_int:
             raise ValueError("Generator g must be less than modulus N")
 
+        # Additional validation for cryptographic security
+        if math.gcd(N_int, g_int) != 1:
+            raise ValueError("RSA modulus N and generator g must be coprime")
+
         return N_int, g_int
 
     except FileNotFoundError:
-        raise FileNotFoundError(f"RSA parameters file not found: {params_file}")
+        # Fall back to demo parameters if file is missing
+        return generate_demo_params()
     except (json.JSONDecodeError, KeyError) as e:
         raise ValueError(f"Invalid parameters file format: {e}")
 
 
-def _generate_demo_params() -> None:
+def generate_demo_params() -> Tuple[int, int]:
     """
-    Generate demo RSA parameters and save to params.json.
+    Generate demo RSA parameters for testing.
+
+    Returns:
+        Tuple[int, int]: A tuple containing (N, g) with demo parameters
 
     Note: This uses hardcoded safe demo parameters for testing.
     In production, use proper RSA key generation with strong entropy.
@@ -75,12 +84,66 @@ def _generate_demo_params() -> None:
         "6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f"
     )
 
-    # Use a simple generator (often g=2 works well for RSA accumulators)
-    g_hex = "2"
+    # Convert N first to compute QR generator
+    N_int = int(N_hex, 16)
+
+    # Use QR subgroup generator: g = 2^2 mod N (ensures g is in quadratic residue subgroup)
+    g_int = pow(2, 2, N_int)
+
+    return N_int, g_int
+
+
+def generate_toy_params() -> Tuple[int, int]:
+    """
+    Generate small toy RSA parameters for unit testing.
+
+    Returns:
+        Tuple[int, int]: A tuple containing small (N, g) for fast testing
+    """
+    # Small toy parameters: N = 11 * 19 = 209, g = 4
+    return 209, 4
+
+
+def validate_params(N: int, g: int) -> None:
+    """
+    Validate RSA parameters for accumulator operations.
+
+    Args:
+        N: RSA modulus
+        g: Generator base
+
+    Raises:
+        ValueError: If parameters are invalid
+    """
+    if N <= 0:
+        raise ValueError("RSA modulus N must be positive")
+
+    if g <= 0:
+        raise ValueError("Generator g must be positive")
+
+    if g >= N:
+        raise ValueError("Generator g must be less than modulus N")
+
+    if N.bit_length() < 1024:  # Minimum for security
+        raise ValueError("RSA modulus N must be at least 1024 bits")
+
+    # Check if N and g are coprime
+    if math.gcd(N, g) != 1:
+        raise ValueError("RSA modulus N and generator g must be coprime")
+
+
+def _generate_demo_params() -> None:
+    """
+    Generate demo RSA parameters and save to params.json.
+
+    Note: This uses hardcoded safe demo parameters for testing.
+    In production, use proper RSA key generation with strong entropy.
+    """
+    N_int, g_int = generate_demo_params()
 
     params = {
-        "N": N_hex,
-        "g": g_hex,
+        "N": hex(N_int),
+        "g": hex(g_int),
         "description": "Demo 2048-bit RSA parameters for accumulator testing",
         "warning": "DO NOT USE IN PRODUCTION - Use proper RSA key generation",
     }

@@ -327,6 +327,77 @@ def verify_trapdoor_removal(A_old: int, A_new: int, removed_prime: int, N: int) 
     return pow(A_new, removed_prime, N) == A_old
 
 
+def trapdoor_remove_member_with_lambda(A: int, prime: int, N: int, lambda_n: int) -> int:
+    """
+    Remove a member from RSA accumulator using λ(N) directly.
+
+    This is a convenience function that performs the same operation as
+    trapdoor_remove_member but takes λ(N) directly instead of (p, q).
+
+    Args:
+        A: Current accumulator value
+        prime: Prime to remove from accumulator
+        N: RSA modulus (N = p * q)
+        lambda_n: Carmichael's lambda function λ(N)
+
+    Returns:
+        int: New accumulator value after removing prime
+
+    Raises:
+        ValueError: If inputs are invalid or operation is impossible
+    """
+    if A <= 0 or prime <= 0 or N <= 0 or lambda_n <= 0:
+        raise ValueError("All parameters must be positive")
+    if not (1 <= A < N):
+        raise ValueError("Accumulator A must be in [1, N-1]")
+    if math.gcd(A, N) != 1:
+        raise ValueError("Accumulator A must be coprime to N (in Z*_N)")
+    inv = modular_inverse(prime % lambda_n, lambda_n)
+    if inv is None:
+        raise ValueError(f"Cannot compute modular inverse of {prime} mod λ(N). gcd({prime}, {lambda_n}) ≠ 1")
+    return pow(A, inv, N)
+
+
+def trapdoor_batch_remove_members_with_lambda(A: int, primes_to_remove: list[int], N: int, lambda_n: int) -> int:
+    """
+    Remove multiple members from accumulator using λ(N) directly.
+
+    This is a convenience function that performs the same operation as
+    trapdoor_batch_remove_members but takes λ(N) directly instead of (p, q).
+
+    Args:
+        A: Current accumulator value
+        primes_to_remove: List of primes to remove
+        N: RSA modulus (N = p * q)
+        lambda_n: Carmichael's lambda function λ(N)
+
+    Returns:
+        int: New accumulator value after removing all primes
+
+    Raises:
+        ValueError: If inputs are invalid or operation is impossible
+    """
+    if not primes_to_remove:
+        return A
+    if A <= 0 or N <= 0 or lambda_n <= 0:
+        raise ValueError("All parameters must be positive")
+    if not (1 <= A < N):
+        raise ValueError("Accumulator A must be in [1, N-1]")
+    if math.gcd(A, N) != 1:
+        raise ValueError("Accumulator A must be coprime to N (in Z*_N)")
+    prod = 1
+    for x in primes_to_remove:
+        if x <= 0 or x >= N:
+            raise ValueError(f"Invalid prime: {x}")
+        if math.gcd(x, lambda_n) != 1:
+            raise ValueError(f"Prime {x} not coprime with λ(N)")
+        prod = (prod * (x % lambda_n)) % lambda_n
+    inv = modular_inverse(prod, lambda_n)
+    if inv is None:
+        raise ValueError("Cannot compute modular inverse of product mod λ(N).")
+    return pow(A, inv, N)
+
+
 def _test_trapdoor_operations() -> None:
     """Test trapdoor operations with small primes."""
     print("Testing Trapdoor Operations:")
