@@ -62,6 +62,34 @@ class TestTrapdoorIntegration:
             'lambda_n': lambda_n
         }
 
+    @pytest.fixture
+    def real_trapdoor_params(self):
+        """Fixture providing real cryptographic RSA trapdoor parameters for testing."""
+        # Real 2048-bit RSA parameters provided by user
+        N_hex = "0xc09f09d858a2037ca76e7b1c52543a002213c8f1086a587f41f9616ac4fd8d6ecbec8852fd95adaec50c34cde7f0e676059896c2be9f2e479297a7507f1d1e58afe26be99489b798a704f1627b8e6b09b9a88b01ce697c4197bbeec134bb41aac0579c8026deec542c6965b0b8d39e77405a65110af3774f88cd463c6c304483c6f0a802f288c8ba4f071b6afcefa2b9395e2fe71aaea8e277c06b5d2724153c4a20209c06f2e0f523fb96b576a37937fb340478e86bbbfa8914c50f0f33a8948836caf99ca5f7f6983787a25e091d9591204dbb8c14e473d172f4e7a0b5164cf9ee97f838ded82fd2357a51a6f495850ef268009e7ecc19047f8e99a91a4d9b"
+        p_hex = "0xdf22790cd88f9990d0a35fbb128adc6f0a4702c9cd9a1956aa5b54bd223105c78d23feff9cd95b67acf71355468304fa5f5673cb7bead0c24b45dbc934b63029b0f0261b6aba63b315fbfb112075987c00f9976cd5b0bc5378704fb1f734f4e9defbfe047c279c9cd4a62a7fbd8cdd85a4292cfe520d975fcf344a1c20b8181b"
+        q_hex = "0xdcfe0670e3010b530afa4de7bd17f9b2829464cb5b1f2b8e0712e585d6ef0852ddfc4b50bb133a09247887788f0e6496cfdee573672b486662374e4d88fb6d1c707aa50c765b99c1c8dad9e47452cf95e5f839fb747bb746be625e9078ca3bf3b357abaa4e683c03f74c61a34f52da82ca604d1bbe50d19621a92c3fc6b4f881"
+
+        p = int(p_hex, 16)
+        q = int(q_hex, 16)
+        N = int(N_hex, 16)
+
+        # Verify N = p * q
+        assert N == p * q, "N should equal p * q"
+
+        # Use safe generator (typically 2 or 4 work well for RSA accumulators)
+        g = 4  # Fixed small generator for real parameters
+
+        lambda_n = compute_lambda_n(p, q)
+
+        return {
+            'p': p,
+            'q': q,
+            'N': N,
+            'g': g,
+            'lambda_n': lambda_n
+        }
+
     def test_single_device_trapdoor_removal_end_to_end(self, trapdoor_params):
         """Test complete workflow: enroll devices → remove one via trapdoor → verify."""
         p, q, N, g, lambda_n = trapdoor_params['p'], trapdoor_params['q'], trapdoor_params['N'], trapdoor_params['g'], trapdoor_params['lambda_n']
@@ -305,3 +333,143 @@ class TestTrapdoorIntegration:
                 product_removed = reduce(lambda x, y: x * y, primes_to_remove)
                 assert verify_trapdoor_removal(A, A_trapdoor, product_removed, N), \
                     f"Trapdoor verification failed for batch removal of primes {primes_to_remove}"
+
+    @pytest.mark.slow
+    def test_single_device_trapdoor_removal_real_params(self, real_trapdoor_params):
+        """Test trapdoor removal with real 2048-bit cryptographic parameters."""
+        p, q, N, g, lambda_n = real_trapdoor_params['p'], real_trapdoor_params['q'], real_trapdoor_params['N'], real_trapdoor_params['g'], real_trapdoor_params['lambda_n']
+
+        # Use smaller device set for real parameters (computationally expensive)
+        device_ids = [b'device_real_1', b'device_real_2', b'device_real_3']
+        device_primes = [7, 13, 17]  # Small primes coprime to λ(N)
+
+        # Build accumulator
+        A = g
+        for prime in device_primes:
+            A = add_member(A, prime, N)
+
+        # Remove one device using trapdoor
+        prime_to_remove = device_primes[1]  # Remove device_real_2
+        A_old = A
+
+        A_new = trapdoor_remove_member(A_old, prime_to_remove, N, p, q)
+
+        # Verify removal
+        remaining_primes = [device_primes[0], device_primes[2]]
+        A_recomputed = recompute_root(remaining_primes, N, g)
+
+        assert A_new == A_recomputed, \
+            f"Real params trapdoor removal failed: A_new != A_recomputed"
+
+        # Verify trapdoor removal verification
+        assert verify_trapdoor_removal(A_old, A_new, prime_to_remove, N), \
+            "Trapdoor verification failed for real parameters"
+
+        # Verify remaining device witnesses
+        for prime in remaining_primes:
+            witness = membership_witness(set(remaining_primes), prime, N, g)
+            is_member = verify_membership(witness, prime, A_new, N)
+            assert is_member, f"Witness verification failed for prime {prime} with real parameters"
+
+    @pytest.mark.slow
+    def test_batch_trapdoor_removal_real_params(self, real_trapdoor_params):
+        """Test batch trapdoor removal with real 2048-bit cryptographic parameters."""
+        p, q, N, g, lambda_n = real_trapdoor_params['p'], real_trapdoor_params['q'], real_trapdoor_params['N'], real_trapdoor_params['g'], real_trapdoor_params['lambda_n']
+
+        # Use small device set for real parameters
+        device_primes = [7, 11, 13, 17]  # All coprime to λ(N)
+
+        # Build accumulator
+        A = batch_add_members(g, device_primes, N)
+
+        # Remove multiple devices using trapdoor batch removal
+        primes_to_remove = [device_primes[0], device_primes[2]]  # Remove first and third
+        A_old = A
+
+        A_new = trapdoor_batch_remove_members(A_old, primes_to_remove, N, p, q)
+
+        # Verify batch removal
+        remaining_primes = [device_primes[1], device_primes[3]]
+        A_recomputed = recompute_root(remaining_primes, N, g)
+
+        assert A_new == A_recomputed, \
+            f"Real params batch trapdoor removal failed: A_new != A_recomputed"
+
+    @pytest.mark.slow
+    def test_lambda_trapdoor_removal_real_params(self, real_trapdoor_params):
+        """Test λ(N)-only trapdoor removal with real 2048-bit cryptographic parameters."""
+        p, q, N, g, lambda_n = real_trapdoor_params['p'], real_trapdoor_params['q'], real_trapdoor_params['N'], real_trapdoor_params['g'], real_trapdoor_params['lambda_n']
+
+        # Use small device set for real parameters
+        device_primes = [7, 13, 17]  # All coprime to λ(N)
+
+        # Build accumulator
+        A = batch_add_members(g, device_primes, N)
+
+        # Remove using λ(N)-only function
+        prime_to_remove = device_primes[1]
+        A_old = A
+
+        A_new = trapdoor_remove_member_with_lambda(A_old, prime_to_remove, N, lambda_n)
+
+        # Verify removal
+        remaining_primes = [device_primes[0], device_primes[2]]
+        A_recomputed = recompute_root(remaining_primes, N, g)
+
+        assert A_new == A_recomputed, \
+            f"Real params λ(N) trapdoor removal failed: A_new != A_recomputed"
+
+        # Verify trapdoor removal verification
+        assert verify_trapdoor_removal(A_old, A_new, prime_to_remove, N), \
+            "Trapdoor verification failed for λ(N) method with real parameters"
+
+    @pytest.mark.slow
+    def test_trapdoor_negative_case_real_params(self, real_trapdoor_params):
+        """Test trapdoor removal failure cases with real 2048-bit parameters."""
+        p, q, N, g, lambda_n = real_trapdoor_params['p'], real_trapdoor_params['q'], real_trapdoor_params['N'], real_trapdoor_params['g'], real_trapdoor_params['lambda_n']
+
+        # Setup valid accumulator
+        valid_prime = 7  # Coprime to λ(N)
+        A = add_member(g, valid_prime, N)
+
+        # Test removal of prime that shares factors with λ(N)
+        # λ(N) = lcm(p-1, q-1) will definitely have factors that divide many numbers
+        problematic_prime = p - 1  # This will share factors with λ(N)
+
+        # This should fail
+        with pytest.raises(ValueError, match="Cannot compute modular inverse"):
+            trapdoor_remove_member(A, problematic_prime, N, p, q)
+
+        # Also test with λ(N)-only function
+        with pytest.raises(ValueError, match="Cannot compute modular inverse"):
+            trapdoor_remove_member_with_lambda(A, problematic_prime, N, lambda_n)
+
+    @pytest.mark.slow
+    def test_accumulator_properties_real_params(self, real_trapdoor_params):
+        """Test fundamental accumulator properties with real 2048-bit parameters."""
+        p, q, N, g, lambda_n = real_trapdoor_params['p'], real_trapdoor_params['q'], real_trapdoor_params['N'], real_trapdoor_params['g'], real_trapdoor_params['lambda_n']
+
+        # Test basic accumulator operations
+        device_primes = [7, 13, 17, 19]  # Small primes coprime to λ(N)
+
+        # Test incremental vs batch addition
+        A_incremental = g
+        for prime in device_primes:
+            A_incremental = add_member(A_incremental, prime, N)
+
+        A_batch = batch_add_members(g, device_primes, N)
+
+        assert A_incremental == A_batch, \
+            "Incremental and batch addition should produce same result with real parameters"
+
+        # Test recomputation
+        A_recomputed = recompute_root(device_primes, N, g)
+
+        assert A_incremental == A_recomputed, \
+            "Incremental and recomputed accumulators should match with real parameters"
+
+        # Test witness properties
+        for i, prime in enumerate(device_primes):
+            witness = membership_witness(set(device_primes), prime, N, g)
+            is_member = verify_membership(witness, prime, A_incremental, N)
+            assert is_member, f"Witness verification failed for prime {prime} with real parameters"
