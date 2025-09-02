@@ -12,14 +12,14 @@ from typing import Set
 try:
     from accum.accumulator import (
         add_member, recompute_root, membership_witness, verify_membership,
-        remove_member, batch_remove_members
+        remove_member, batch_remove_members, batch_add_members
     )
 except ImportError:
     import sys
     sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
     from accumulator import (
         add_member, recompute_root, membership_witness, verify_membership,
-        remove_member, batch_remove_members
+        remove_member, batch_remove_members, batch_add_members
     )
 
 
@@ -77,25 +77,25 @@ class TestAccumulatorCore:
         """Test add_member input validation."""
         N, g = toy_params
         
-        # Invalid accumulator
-        with pytest.raises(ValueError, match="Accumulator must be positive"):
+        # Invalid parameters
+        with pytest.raises(ValueError, match="All parameters must be positive"):
             add_member(0, 13, N)
-        
-        with pytest.raises(ValueError, match="Accumulator must be positive"):
+
+        with pytest.raises(ValueError, match="All parameters must be positive"):
             add_member(-1, 13, N)
-        
+
         # Invalid prime
-        with pytest.raises(ValueError, match="Prime must be positive"):
+        with pytest.raises(ValueError, match="All parameters must be positive"):
             add_member(g, 0, N)
-        
-        with pytest.raises(ValueError, match="Prime must be positive"):
+
+        with pytest.raises(ValueError, match="All parameters must be positive"):
             add_member(g, -1, N)
-        
+
         # Invalid modulus
-        with pytest.raises(ValueError, match="Modulus must be positive"):
+        with pytest.raises(ValueError, match="All parameters must be positive"):
             add_member(g, 13, 0)
-        
-        with pytest.raises(ValueError, match="Modulus must be positive"):
+
+        with pytest.raises(ValueError, match="All parameters must be positive"):
             add_member(g, 13, -1)
     
     def test_recompute_root_empty_set(self, toy_params):
@@ -141,18 +141,18 @@ class TestAccumulatorCore:
         """Test recompute_root input validation."""
         N, g = toy_params
         
-        # Invalid modulus
-        with pytest.raises(ValueError, match="Modulus must be positive"):
+        # Invalid parameters
+        with pytest.raises(ValueError, match="N and g must be positive"):
             recompute_root({13}, 0, g)
-        
+
         # Invalid generator
-        with pytest.raises(ValueError, match="Generator must be positive"):
+        with pytest.raises(ValueError, match="N and g must be positive"):
             recompute_root({13}, N, 0)
-        
+
         # Invalid prime in set
         with pytest.raises(ValueError, match="All primes must be positive"):
             recompute_root({0}, N, g)
-        
+
         with pytest.raises(ValueError, match="All primes must be positive"):
             recompute_root({13, -1}, N, g)
     
@@ -196,15 +196,15 @@ class TestAccumulatorCore:
         N, g = toy_params
         
         # Invalid target prime
-        with pytest.raises(ValueError, match="Target prime must be positive"):
+        with pytest.raises(ValueError, match="Target prime 0 must be greater than 1"):
             membership_witness({13}, 0, N, g)
-        
-        # Invalid modulus
-        with pytest.raises(ValueError, match="Modulus must be positive"):
+
+        # Invalid parameters
+        with pytest.raises(ValueError, match="N and g must be positive"):
             membership_witness({13}, 17, 0, g)
         
         # Invalid generator
-        with pytest.raises(ValueError, match="Generator must be positive"):
+        with pytest.raises(ValueError, match="N and g must be positive"):
             membership_witness({13}, 17, N, 0)
     
     def test_verify_membership_valid_proof(self, toy_params):
@@ -255,22 +255,12 @@ class TestAccumulatorCore:
         N, g = toy_params
         A = pow(g, 13, N)
         w = g
-        
-        # Invalid witness
-        with pytest.raises(ValueError, match="Witness must be positive"):
-            verify_membership(0, 13, A, N)
-        
-        # Invalid prime
-        with pytest.raises(ValueError, match="Prime must be positive"):
-            verify_membership(w, 0, A, N)
-        
-        # Invalid accumulator
-        with pytest.raises(ValueError, match="Accumulator must be positive"):
-            verify_membership(w, 13, 0, N)
-        
-        # Invalid modulus
-        with pytest.raises(ValueError, match="Modulus must be positive"):
-            verify_membership(w, 13, A, 0)
+
+        # Invalid inputs should return False (not raise exceptions)
+        assert verify_membership(0, 13, A, N) == False  # Invalid witness
+        assert verify_membership(w, 0, A, N) == False  # Invalid prime
+        assert verify_membership(w, 13, 0, N) == False  # Invalid accumulator
+        assert verify_membership(w, 13, A, 0) == False  # Invalid modulus
     
     def test_incremental_vs_batch_equivalence(self, toy_params):
         """Test that incremental and batch accumulator computation are equivalent."""
@@ -316,8 +306,8 @@ class TestAccumulatorCore:
         
         # Different groupings should give same result
         A1 = add_member(add_member(add_member(g, 13, N), 17, N), 23, N)
-        A2 = add_member(g, 13 * 17 * 23, N)  # Direct computation
-        
+        A2 = batch_add_members(g, [13, 17, 23], N)  # Batch computation
+
         assert A1 == A2
 
 

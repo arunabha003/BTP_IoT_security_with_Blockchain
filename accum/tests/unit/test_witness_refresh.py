@@ -10,10 +10,11 @@ from typing import Set
 
 try:
     from accum.witness_refresh import (
-        refresh_witness, batch_refresh_witnesses, 
+        refresh_witness, batch_refresh_witnesses,
         update_witness_on_addition, update_witness_on_removal
     )
     from accum.accumulator import recompute_root, membership_witness, verify_membership
+    from accum.rsa_params import generate_toy_params
 
 except ImportError:
     import sys
@@ -23,6 +24,7 @@ except ImportError:
         update_witness_on_addition, update_witness_on_removal
     )
     from accumulator import recompute_root, membership_witness, verify_membership
+    from rsa_params import generate_toy_params
 
 
 
@@ -42,7 +44,7 @@ class TestWitnessRefresh:
     @pytest.fixture
     def toy_params(self):
         """Provide toy RSA parameters for testing."""
-        return generate_demo_params()  # N=209, g=2
+        return generate_toy_params()  # N=209, g=4
     
     def test_refresh_witness_basic(self, toy_params):
         """Test basic witness refresh for a single prime."""
@@ -56,19 +58,16 @@ class TestWitnessRefresh:
         # Verify the witness is correct
         A = recompute_root(set_primes, N, g)
         assert verify_membership(witness, target_p, A, N)
-    
+
     def test_refresh_witness_target_not_in_set(self, toy_params):
         """Test witness refresh when target prime is not in current set."""
         N, g = toy_params
         target_p = 29  # Not in set
         set_primes = {13, 17, 23}
-        
-        # Should still compute a witness (for potential addition)
-        witness = refresh_witness(target_p, set_primes, N, g)
-        
-        # Witness should be g^(product of all primes in set) mod N
-        expected = recompute_root(set_primes, N, g)
-        assert witness == expected
+
+        # Should raise error for prime not in set
+        with pytest.raises(ValueError, match="Target prime 29 not found in set_primes"):
+            refresh_witness(target_p, set_primes, N, g)
     
     def test_refresh_witness_empty_set(self, toy_params):
         """Test witness refresh with empty prime set."""
@@ -93,19 +92,19 @@ class TestWitnessRefresh:
         N, g = toy_params
         
         # Invalid target prime
-        with pytest.raises(ValueError, match="Target prime must be positive"):
+        with pytest.raises(ValueError, match="Target prime 0 must be greater than 1"):
             refresh_witness(0, {13, 17}, N, g)
-        
+
         # Invalid modulus
-        with pytest.raises(ValueError, match="Modulus must be positive"):
+        with pytest.raises(ValueError, match="N and g must be positive"):
             refresh_witness(13, {17}, 0, g)
-        
+
         # Invalid generator
-        with pytest.raises(ValueError, match="Generator must be positive"):
+        with pytest.raises(ValueError, match="N and g must be positive"):
             refresh_witness(13, {17}, N, 0)
         
         # Invalid prime in set
-        with pytest.raises(ValueError, match="All primes must be positive"):
+        with pytest.raises(ValueError, match="All primes must be greater than 1"):
             refresh_witness(13, {0, 17}, N, g)
     
     def test_batch_refresh_witnesses(self, toy_params):
@@ -113,34 +112,34 @@ class TestWitnessRefresh:
         N, g = toy_params
         target_primes = [13, 17, 23]
         set_primes = {13, 17, 23, 29}
-        
-        witnesses = batch_refresh_witnesses(target_primes, set_primes, N, g)
+
+        witnesses = batch_refresh_witnesses(set_primes, N, g)
         
         # Verify all witnesses
         A = recompute_root(set_primes, N, g)
-        for i, p in enumerate(target_primes):
-            assert verify_membership(witnesses[i], p, A, N)
+        for p in target_primes:
+            assert verify_membership(witnesses[p], p, A, N)
     
     def test_batch_refresh_witnesses_empty_targets(self, toy_params):
         """Test batch witness refresh with empty target list."""
         N, g = toy_params
         target_primes = []
         set_primes = {13, 17, 23}
-        
-        witnesses = batch_refresh_witnesses(target_primes, set_primes, N, g)
-        assert witnesses == []
-    
+
+        witnesses = batch_refresh_witnesses(set_primes, N, g)
+        assert len(witnesses) == len(set_primes)  # Should return witnesses for all primes in set
+
     def test_batch_refresh_witnesses_validation(self, toy_params):
         """Test batch_refresh_witnesses input validation."""
         N, g = toy_params
-        
-        # Invalid target prime
-        with pytest.raises(ValueError, match="All target primes must be positive"):
-            batch_refresh_witnesses([13, 0, 17], {13, 17}, N, g)
-        
+
+        # Invalid prime in set
+        with pytest.raises(ValueError, match="All primes must be greater than 1"):
+            batch_refresh_witnesses({13, 0, 17}, N, g)
+
         # Invalid modulus
-        with pytest.raises(ValueError, match="Modulus must be positive"):
-            batch_refresh_witnesses([13], {17}, 0, g)
+        with pytest.raises(ValueError, match="N and g must be positive"):
+            batch_refresh_witnesses({13, 17}, 0, g)
     
     def test_update_witness_on_addition(self, toy_params):
         """Test witness update when a new member is added."""
@@ -170,23 +169,23 @@ class TestWitnessRefresh:
         N, g = toy_params
         
         # Invalid old witness
-        with pytest.raises(ValueError, match="Old witness must be positive"):
+        with pytest.raises(ValueError, match="All parameters must be positive"):
             update_witness_on_addition(0, 13, N)
-        
+
         # Invalid new prime
-        with pytest.raises(ValueError, match="New prime must be positive"):
+        with pytest.raises(ValueError, match="All parameters must be positive"):
             update_witness_on_addition(g, 0, N)
         
         # Invalid modulus
-        with pytest.raises(ValueError, match="Modulus must be positive"):
+        with pytest.raises(ValueError, match="All parameters must be positive"):
             update_witness_on_addition(g, 13, 0)
     
     def test_update_witness_on_removal_not_implemented(self, toy_params):
         """Test that witness update on removal raises NotImplementedError."""
         N, g = toy_params
         
-        with pytest.raises(NotImplementedError, match="Witness update on removal"):
-            update_witness_on_removal(g, 13, {17, 23}, N, g)
+        with pytest.raises(NotImplementedError, match="Efficient witness update on removal"):
+            update_witness_on_removal(g, 13, N)
     
     def test_witness_consistency_after_refresh(self, toy_params):
         """Test that refreshed witnesses are consistent with direct computation."""
@@ -252,22 +251,22 @@ class TestWitnessRefresh:
         target_primes = [13, 17, 23, 29, 31]
         set_primes = {13, 17, 23, 29, 31, 37}
         
-        # Batch refresh
-        batch_witnesses = batch_refresh_witnesses(target_primes, set_primes, N, g)
-        
+        # Batch refresh (returns witnesses for ALL primes in set)
+        batch_witnesses = batch_refresh_witnesses(set_primes, N, g)
+
         # Individual refresh
-        individual_witnesses = []
-        for p in target_primes:
+        individual_witnesses = {}
+        for p in set_primes:
             w = refresh_witness(p, set_primes, N, g)
-            individual_witnesses.append(w)
-        
+            individual_witnesses[p] = w
+
         # Results should be identical
         assert batch_witnesses == individual_witnesses
-        
+
         # Verify all witnesses
         A = recompute_root(set_primes, N, g)
-        for i, p in enumerate(target_primes):
-            assert verify_membership(batch_witnesses[i], p, A, N)
+        for p in set_primes:
+            assert verify_membership(batch_witnesses[p], p, A, N)
     
     def test_witness_update_incremental_consistency(self, toy_params):
         """Test that incremental witness updates are consistent."""
@@ -317,8 +316,7 @@ class TestWitnessRemovalUpdates:
         A = recompute_root(primes, N, g)
         
         # Get witness for prime 7 before removal
-        primes_without_7 = primes - {7}
-        old_witness = membership_witness(primes_without_7, N, g)
+        old_witness = membership_witness(primes, 7, N, g)
         assert verify_membership(old_witness, 7, A, N)
         
         # Remove prime 13 from the set
@@ -334,7 +332,7 @@ class TestWitnessRemovalUpdates:
         
         # Compare with direct computation
         new_primes_without_7 = new_primes - {7}
-        expected_witness = membership_witness(new_primes_without_7, N, g)
+        expected_witness = membership_witness(new_primes, 7, N, g)
         assert new_witness == expected_witness
     
     def test_update_witness_on_removal_without_trapdoor(self, toy_params_with_trapdoor):
@@ -369,7 +367,7 @@ class TestWitnessRemovalUpdates:
         
         # Get witness for prime 7
         initial_primes_without_7 = initial_primes - {7}
-        witness_7 = membership_witness(initial_primes_without_7, N, g)
+        witness_7 = membership_witness(initial_primes, 7, N, g)
         assert verify_membership(witness_7, 7, A_initial, N)
         
         # Add a prime and update witness
@@ -398,7 +396,7 @@ class TestWitnessRemovalUpdates:
         
         # Get initial witness for target prime
         initial_primes_without_target = initial_primes - {target_prime}
-        current_witness = membership_witness(initial_primes_without_target, N, g)
+        current_witness = membership_witness(initial_primes, target_prime, N, g)
         current_primes = initial_primes.copy()
         
         # Remove primes one by one and update witness
@@ -415,7 +413,7 @@ class TestWitnessRemovalUpdates:
         
         # Final witness should match direct computation
         final_primes_without_target = current_primes - {target_prime}
-        final_witness_direct = membership_witness(final_primes_without_target, N, g)
+        final_witness_direct = membership_witness(current_primes, target_prime, N, g)
         assert current_witness == final_witness_direct
     
     def test_witness_update_invalid_inputs(self, toy_params_with_trapdoor):

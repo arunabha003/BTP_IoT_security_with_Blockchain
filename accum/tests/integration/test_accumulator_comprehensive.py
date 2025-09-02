@@ -6,16 +6,16 @@ Tests cover both small-prime property tests and realistic 2048-bit operations.
 
 import pytest
 
-from .rsa_params import load_params
-from .hash_to_prime import hash_to_prime, is_prime
-from .accumulator import (
+from accum.rsa_params import load_params
+from accum.hash_to_prime import hash_to_prime, _mr_is_probable_prime
+from accum.accumulator import (
     add_member,
     recompute_root,
     membership_witness,
     verify_membership,
     batch_add_members,
 )
-from .witness_refresh import (
+from accum.witness_refresh import (
     refresh_witness,
     batch_refresh_witnesses,
     update_witness_on_addition,
@@ -33,7 +33,7 @@ class TestHashToPrime:
         prime2 = hash_to_prime(input_bytes)
 
         assert prime1 == prime2, "hash_to_prime should be deterministic"
-        assert is_prime(prime1), "Result should be prime"
+        assert _mr_is_probable_prime(prime1), "Result should be prime"
 
     def test_hash_to_prime_different_inputs(self):
         """Test that different inputs produce different primes."""
@@ -44,18 +44,18 @@ class TestHashToPrime:
         prime2 = hash_to_prime(input2)
 
         assert prime1 != prime2, "Different inputs should produce different primes"
-        assert is_prime(prime1) and is_prime(prime2), "Both results should be prime"
+        assert _mr_is_probable_prime(prime1) and _mr_is_probable_prime(prime2), "Both results should be prime"
 
     def test_hash_to_prime_edge_cases(self):
         """Test hash_to_prime with edge cases."""
         # Test with minimum valid input
         prime = hash_to_prime(b"x")
-        assert is_prime(prime)
+        assert _mr_is_probable_prime(prime)
 
         # Test with maximum typical Ed25519 key size
         large_key = b"a" * 32
         prime = hash_to_prime(large_key)
-        assert is_prime(prime)
+        assert _mr_is_probable_prime(prime)
 
     def test_hash_to_prime_errors(self):
         """Test hash_to_prime error conditions."""
@@ -125,7 +125,7 @@ class TestSmallPrimeProperties:
 
         # Compute witness for target_prime (exclude it)
         other_primes = [p for p in primes if p != target_prime]
-        w = membership_witness(other_primes, N, g)
+        w = membership_witness(set(primes), target_prime, N, g)
 
         # Verify: w^target_prime ≡ A (mod N)
         assert pow(w, target_prime, N) == A
@@ -189,8 +189,8 @@ class TestRealWorldScenario:
         A = recompute_root(primes_set, N, g)
 
         # Step 2: Verify both members
-        w1 = membership_witness([p2], N, g)  # Witness for p1
-        w2 = membership_witness([p1], N, g)  # Witness for p2
+        w1 = membership_witness({p1, p2}, p1, N, g)  # Witness for p1
+        w2 = membership_witness({p1, p2}, p2, N, g)  # Witness for p2
 
         assert verify_membership(w1, p1, A, N), "Device 1 should be verified"
         assert verify_membership(w2, p2, A, N), "Device 2 should be verified"
@@ -298,7 +298,8 @@ class TestWitnessRefresh:
         N, g = small_params
         primes_set = {3, 11}
 
-        with pytest.raises(ValueError, match="not found in set_primes"):
+        # Should raise error for prime not in set
+        with pytest.raises(ValueError, match="Target prime 13 not found in set_primes"):
             refresh_witness(13, primes_set, N, g)  # 13 not in set
 
     def test_batch_refresh_witnesses(self, small_params):
