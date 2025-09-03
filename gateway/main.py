@@ -15,20 +15,12 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 
-try:
-    from .config import get_settings
-    from .database import init_database, close_database, get_db_session
-    from .blockchain import init_blockchain, close_blockchain, blockchain_client
-    from .logging_config import setup_logging, get_logger
-    from .middleware import AdminAuthMiddleware, RateLimitMiddleware, SecurityHeadersMiddleware
-    from .api_routes import router as api_router
-except ImportError:
-    from config import get_settings
-    from database import init_database, close_database, get_db_session
-    from blockchain import init_blockchain, close_blockchain, blockchain_client
-    from logging_config import setup_logging, get_logger
-    from middleware import AdminAuthMiddleware, RateLimitMiddleware, SecurityHeadersMiddleware
-    from api_routes import router as api_router
+from .config import get_settings
+from .database import init_database, close_database, get_db_session
+from .blockchain import init_blockchain, close_blockchain, blockchain_client
+from .logging_config import setup_logging, get_logger
+from .middleware import AdminAuthMiddleware, RateLimitMiddleware, SecurityHeadersMiddleware
+from .api_routes import router as api_router
 
 
 # Setup logging first

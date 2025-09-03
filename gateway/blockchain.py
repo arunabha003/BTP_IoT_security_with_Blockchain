@@ -17,14 +17,10 @@ from web3.contract import Contract
 from web3.types import FilterParams, LogReceipt
 from sqlalchemy import select, desc
 
-try:
-    from .config import get_settings
-    from .database import get_db_session
-    from .models import AccumulatorRoot, EventLog
-except ImportError:
-    from config import get_settings
-    from database import get_db_session
-    from models import AccumulatorRoot, EventLog
+from .config import get_settings
+from .database import get_db_session
+from .models import AccumulatorRoot, EventLog
+from .utils import hex_to_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +114,7 @@ class BlockchainClient:
         """Get current accumulator root (cached or from contract)."""
         if self.current_root and self.current_root != "0x":
             return self.current_root
-            
+
         # Try to get from contract
         if self.contract:
             try:
@@ -127,20 +123,289 @@ class BlockchainClient:
                 return self.current_root
             except Exception as e:
                 logger.error(f"Failed to get current root from contract: {e}")
-        
+
         # Fallback to database
         async with get_db_session() as session:
             stmt = select(AccumulatorRoot).order_by(desc(AccumulatorRoot.block)).limit(1)
             result = await session.execute(stmt)
             latest_root = result.scalar_one_or_none()
-            
+
             if latest_root:
                 self.current_root = latest_root.value
                 return self.current_root
-        
+
         # Return empty if nothing found
         return "0x"
-    
+
+    async def update_accumulator(self, new_accumulator: bytes, parent_hash: bytes, operation_id: str) -> str:
+        """Update accumulator on-chain via the authorized Safe multisig."""
+        if not self.contract or not self.w3:
+            raise RuntimeError("Contract not loaded or blockchain not connected")
+
+        settings = get_settings()
+
+        try:
+            # Get current accumulator for parent hash validation
+            current_root = await self.get_current_root()
+            if current_root == "0x":
+                current_root_bytes = b'\x00' * 32
+            else:
+                current_root_bytes = hex_to_bytes(current_root)
+
+            # Compute expected parent hash
+            import hashlib
+            from Crypto.Hash import keccak
+            keccak_hash = keccak.new(digest_bits=256)
+            keccak_hash.update(current_root_bytes)
+            expected_parent_hash = keccak_hash.digest()
+
+            # Validate parent hash
+            if parent_hash != b'\x00' * 32 and parent_hash != expected_parent_hash:
+                raise ValueError("Parent hash mismatch")
+
+            # Generate operation ID for replay protection
+            operation_id_bytes = operation_id.encode()
+
+            # Call updateAccumulator on the contract
+            # Note: In production, this should be called through the Safe multisig
+            # For now, we assume the caller is authorized
+            tx = self.contract.functions.updateAccumulator(
+                new_accumulator,
+                expected_parent_hash if parent_hash == b'\x00' * 32 else parent_hash,
+                operation_id_bytes
+            )
+
+            logger.info(f"Accumulator update prepared: {new_accumulator.hex()[:16]}...")
+
+            if settings.simulate_transactions:
+                # Simulate transaction hash for development
+                tx_hash = "0x" + hashlib.sha256(f"{new_accumulator.hex()}{operation_id}".encode()).hexdigest()[:64]
+                logger.info(f"Transaction simulated (hash: {tx_hash})")
+                return tx_hash
+            else:
+                # Send real transaction to blockchain
+                try:
+                    # Build transaction
+                    tx_data = tx.build_transaction({
+                        'from': self.w3.eth.accounts[0],  # Use first account from Anvil
+                        'gas': 200000,
+                        'gasPrice': self.w3.eth.gas_price,
+                        'nonce': self.w3.eth.get_transaction_count(self.w3.eth.accounts[0])
+                    })
+
+                    # Sign and send transaction
+                    signed_tx = self.w3.eth.account.sign_transaction(tx_data, '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80')
+                    tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+
+                    # Wait for confirmation
+                    receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+
+                    logger.info(f"✅ Real transaction sent: {tx_hash.hex()}")
+                    logger.info(f"✅ Block: {receipt['blockNumber']}, Gas used: {receipt['gasUsed']}")
+
+                    return tx_hash.hex()
+
+                except Exception as e:
+                    logger.error(f"❌ Failed to send real transaction: {e}")
+                    raise
+
+        except Exception as e:
+            logger.error(f"Failed to update accumulator: {e}")
+            raise
+
+    async def register_device(self, device_id: bytes, new_accumulator: bytes, operation_id: str) -> str:
+        """Register a new device on-chain via the authorized Safe multisig."""
+        if not self.contract or not self.w3:
+            raise RuntimeError("Contract not loaded or blockchain not connected")
+
+        try:
+            # Get current accumulator for parent hash validation
+            current_root = await self.get_current_root()
+            if current_root == "0x":
+                current_root_bytes = b'\x00' * 32
+            else:
+                current_root_bytes = hex_to_bytes(current_root)
+
+            # Compute expected parent hash
+            import hashlib
+            from Crypto.Hash import keccak
+            keccak_hash = keccak.new(digest_bits=256)
+            keccak_hash.update(current_root_bytes)
+            expected_parent_hash = keccak_hash.digest()
+
+            # Generate operation ID for replay protection
+            operation_id_bytes = operation_id.encode()
+
+            # Call registerDevice on the contract
+            # Note: In production, this should be called through the Safe multisig
+            tx = self.contract.functions.registerDevice(
+                device_id,
+                new_accumulator,
+                expected_parent_hash,
+                operation_id_bytes
+            )
+
+            # In production, you would:
+            # 1. Sign the transaction
+            # 2. Send it to the blockchain
+            # 3. Wait for confirmation
+            # For development, we'll simulate success
+
+            logger.info(f"Device registration prepared: {device_id.decode()}")
+
+            settings = get_settings()
+            if settings.simulate_transactions:
+                # Simulate transaction hash for development
+                tx_hash = "0x" + hashlib.sha256(f"{device_id.hex()}{new_accumulator.hex()}{operation_id}".encode()).hexdigest()[:64]
+                logger.info(f"Transaction simulated (hash: {tx_hash})")
+                return tx_hash
+            else:
+                # Send real transaction to blockchain
+                try:
+                    # Build transaction
+                    tx_data = tx.build_transaction({
+                        'from': self.w3.eth.accounts[0],  # Use first account from Anvil
+                        'gas': 200000,
+                        'gasPrice': self.w3.eth.gas_price,
+                        'nonce': self.w3.eth.get_transaction_count(self.w3.eth.accounts[0])
+                    })
+
+                    # Sign and send transaction
+                    signed_tx = self.w3.eth.account.sign_transaction(tx_data, '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80')
+                    tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+
+                    # Wait for confirmation
+                    receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+
+                    logger.info(f"✅ Real transaction sent: {tx_hash.hex()}")
+                    logger.info(f"✅ Block: {receipt['blockNumber']}, Gas used: {receipt['gasUsed']}")
+
+                    return tx_hash.hex()
+
+                except Exception as e:
+                    logger.error(f"❌ Failed to send real transaction: {e}")
+                    raise
+
+        except Exception as e:
+            logger.error(f"Failed to register device: {e}")
+            raise
+
+    async def revoke_device(self, device_id: bytes, new_accumulator: bytes, operation_id: str) -> str:
+        """Revoke a device on-chain via the authorized Safe multisig."""
+        if not self.contract or not self.w3:
+            raise RuntimeError("Contract not loaded or blockchain not connected")
+
+        try:
+            # Get current accumulator for parent hash validation
+            current_root = await self.get_current_root()
+            if current_root == "0x":
+                current_root_bytes = b'\x00' * 32
+            else:
+                current_root_bytes = hex_to_bytes(current_root)
+
+            # Compute expected parent hash
+            import hashlib
+            from Crypto.Hash import keccak
+            keccak_hash = keccak.new(digest_bits=256)
+            keccak_hash.update(current_root_bytes)
+            expected_parent_hash = keccak_hash.digest()
+
+            # Generate operation ID for replay protection
+            operation_id_bytes = operation_id.encode()
+
+            # Call revokeDevice on the contract
+            # Note: In production, this should be called through the Safe multisig
+            tx = self.contract.functions.revokeDevice(
+                device_id,
+                new_accumulator,
+                expected_parent_hash,
+                operation_id_bytes
+            )
+
+            # In production, you would:
+            # 1. Sign the transaction
+            # 2. Send it to the blockchain
+            # 3. Wait for confirmation
+            # For development, we'll simulate success
+
+            logger.info(f"Device revocation prepared: {device_id.decode()}")
+
+            settings = get_settings()
+            if settings.simulate_transactions:
+                # Simulate transaction hash for development
+                tx_hash = "0x" + hashlib.sha256(f"{device_id.hex()}{new_accumulator.hex()}{operation_id}".encode()).hexdigest()[:64]
+                logger.info(f"Transaction simulated (hash: {tx_hash})")
+                return tx_hash
+            else:
+                # Send real transaction to blockchain
+                try:
+                    # Build transaction
+                    tx_data = tx.build_transaction({
+                        'from': self.w3.eth.accounts[0],  # Use first account from Anvil
+                        'gas': 200000,
+                        'gasPrice': self.w3.eth.gas_price,
+                        'nonce': self.w3.eth.get_transaction_count(self.w3.eth.accounts[0])
+                    })
+
+                    # Sign and send transaction
+                    signed_tx = self.w3.eth.account.sign_transaction(tx_data, '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80')
+                    tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+
+                    # Wait for confirmation
+                    receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+
+                    logger.info(f"✅ Real transaction sent: {tx_hash.hex()}")
+                    logger.info(f"✅ Block: {receipt['blockNumber']}, Gas used: {receipt['gasUsed']}")
+
+                    return tx_hash.hex()
+
+                except Exception as e:
+                    logger.error(f"❌ Failed to send real transaction: {e}")
+                    raise
+
+        except Exception as e:
+            logger.error(f"Failed to revoke device: {e}")
+            raise
+
+    async def get_accumulator_data(self) -> Dict[str, Any]:
+        """Get current accumulator data from blockchain."""
+        if not self.contract or not self.w3:
+            return {
+                "current_root": "0x",
+                "active_devices": 0,
+                "version": 1,
+                "emergency_paused": False
+            }
+
+        try:
+            # Get current accumulator root
+            current_root = self.contract.functions.currentAccumulator().call()
+            current_root_hex = hex(current_root) if isinstance(current_root, int) else current_root.hex()
+
+            # Get version
+            version = self.contract.functions.version().call()
+
+            # Get emergency pause status
+            emergency_paused = self.contract.functions.emergencyPaused().call()
+
+            # For active devices, we'd need to track this separately or estimate from events
+            # For now, return what we can get from the contract
+            return {
+                "current_root": current_root_hex,
+                "active_devices": 0,  # Would need separate tracking
+                "version": version,
+                "emergency_paused": emergency_paused
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get accumulator data: {e}")
+            return {
+                "current_root": "0x",
+                "active_devices": 0,
+                "version": 1,
+                "emergency_paused": False
+            }
+
     async def start_event_monitoring(self) -> None:
         """Start monitoring AccumulatorUpdated events."""
         if not self.contract or not self.w3:

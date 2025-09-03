@@ -13,10 +13,7 @@ from typing import Any, Dict
 
 from pythonjsonlogger import jsonlogger
 
-try:
-    from .config import get_settings
-except ImportError:
-    from config import get_settings
+from .config import get_settings
 
 
 class RequestIDFilter(logging.Filter):

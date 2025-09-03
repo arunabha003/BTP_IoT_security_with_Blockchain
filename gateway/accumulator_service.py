@@ -14,46 +14,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # Add accum package to path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'accum'))
 
-try:
-    from .database import get_db_session
-    from .models import Device, AccumulatorRoot
-    from .blockchain import blockchain_client
-    from .utils import bytes_to_hex, hex_to_bytes, int_to_bytes, bytes_to_int
-except ImportError:
-    from database import get_db_session
-    from models import Device, AccumulatorRoot
-    from blockchain import blockchain_client
-    from utils import bytes_to_hex, hex_to_bytes, int_to_bytes, bytes_to_int
+from .database import get_db_session
+from .models import Device, AccumulatorRoot
+from .blockchain import blockchain_client
+from .utils import bytes_to_hex, hex_to_bytes, int_to_bytes, bytes_to_int
 
 # Import RSA accumulator functions
-try:
-    from rsa_params import load_params
-    from hash_to_prime import hash_to_prime
-    from accumulator import add_member, recompute_root, membership_witness, verify_membership
-    from witness_refresh import refresh_witness
-except ImportError as e:
-    logging.error(f"Failed to import RSA accumulator modules: {e}")
-    # Create stub functions for testing
-    def load_params():
-        return (2**2048 - 1, 2)  # Dummy values
-    def hash_to_prime(data):
-        return 17  # Dummy prime
-    def add_member(A, p, N):
-        return pow(A, p, N)
-    def recompute_root(primes, N, g):
-        if not primes:
-            return g
-        product = 1
-        for p in primes:
-            product *= p
-        return pow(g, product, N)
-    def membership_witness(other_primes, N, g):
-        return recompute_root(other_primes, N, g)
-    def verify_membership(w, p, A, N):
-        return pow(w, p, N) == A
-    def refresh_witness(p, primes, N, g):
-        other_primes = [prime for prime in primes if prime != p]
-        return membership_witness(other_primes, N, g)
+from rsa_params import load_params
+from hash_to_prime import hash_to_prime
+from accumulator import add_member, recompute_root, membership_witness, verify_membership
+from witness_refresh import refresh_witness
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +43,7 @@ class AccumulatorService:
             logger.info(f"Loaded RSA parameters: N={self.N.bit_length()} bits, g={self.g}")
         except Exception as e:
             logger.error(f"Failed to load RSA parameters: {e}")
-            # Use dummy values for testing
-            self.N, self.g = (2**2048 - 1, 2)
+            raise RuntimeError(f"Cannot initialize AccumulatorService without valid RSA parameters: {e}")
     
     async def get_active_device_primes(self) -> List[int]:
         """Get all active device primes from database."""
@@ -280,7 +249,7 @@ class AccumulatorService:
                 all_primes = await self.get_active_device_primes()
                 
                 # Refresh witness
-                new_witness = refresh_witness(device_prime, set(all_primes), self.N, self.g)
+                new_witness = membership_witness(set(all_primes), device_prime, self.N, self.g)
                 new_witness_hex = hex(new_witness)
                 
                 # Update database

@@ -16,12 +16,8 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy import event, Engine
 
-try:
-    from .config import get_settings
-    from .models import Base
-except ImportError:
-    from config import get_settings
-    from models import Base
+from .config import get_settings
+from .models import Base
 
 logger = logging.getLogger(__name__)
 

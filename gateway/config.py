@@ -78,6 +78,13 @@ class Settings(BaseSettings):
         description="Directory containing contract build artifacts"
     )
 
+    # Transaction mode
+    simulate_transactions: bool = Field(
+        default=True,
+        env="SIMULATE_TRANSACTIONS",
+        description="Whether to simulate blockchain transactions (for development)"
+    )
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

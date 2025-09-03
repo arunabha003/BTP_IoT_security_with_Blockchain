@@ -10,12 +10,8 @@ from fastapi import Request, Response, HTTPException, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-try:
-    from .config import get_settings
-    from .utils import constant_time_compare, ip_rate_limiter, device_rate_limiter
-except ImportError:
-    from config import get_settings
-    from utils import constant_time_compare, ip_rate_limiter, device_rate_limiter
+from .config import get_settings
+from .utils import constant_time_compare, ip_rate_limiter, device_rate_limiter
 
 logger = logging.getLogger(__name__)
 
