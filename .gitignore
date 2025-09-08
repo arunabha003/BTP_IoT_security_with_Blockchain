@@ -56,6 +56,7 @@ cover/
 
 # Virtual environments
 venv/
+.venv311/
 env/
 ENV/
 env.bak/
