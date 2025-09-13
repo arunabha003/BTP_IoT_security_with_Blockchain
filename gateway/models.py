@@ -154,6 +154,26 @@ class DeviceListResponse(BaseModel):
     revoked: int = Field(..., description="Number of revoked devices")
 
 
+# Key generation models
+
+class KeyGenRequest(BaseModel):
+    """Request to generate a device keypair for testing."""
+    keyType: str = Field(default="ed25519", description="ed25519 or rsa")
+
+    @validator('keyType')
+    def validate_key_type(cls, v):
+        if v not in ['ed25519', 'rsa']:
+            raise ValueError('keyType must be "ed25519" or "rsa"')
+        return v
+
+
+class KeyGenResponse(BaseModel):
+    """Response containing generated key material (demo use only)."""
+    keyType: str
+    privateKey: str = Field(..., description="Base64 for ed25519; PEM for RSA")
+    publicKeyPEM: str
+
+
 # Utility Models for Testing
 
 class TestEnrollRequest(BaseModel):

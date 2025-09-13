@@ -24,6 +24,7 @@ from accum.accumulator import add_member, verify_membership
 from accum.trapdoor_operations import trapdoor_remove_member_with_lambda
 from accum.hash_to_prime import hash_to_prime_coprime_lambda
 from accum.rsa_key_generator import verify_device_signature
+from accum.rsa_key_generator import generate_ed25519_keypair, generate_rsa_keypair
 from accum.witness_refresh import update_witness_on_addition, refresh_witness
 
 # Import gateway modules  
@@ -35,6 +36,7 @@ from models import (
     AuthRequest, AuthResponse, 
     RevokeRequest, RevokeResponse,
     RootResponse, StatusResponse,
+    KeyGenRequest, KeyGenResponse,
     ErrorResponse
 )
 
@@ -460,6 +462,32 @@ async def root():
             "GET /status": "Get system status"
         }
     }
+
+
+# Demo/testing: generate keypairs
+@app.post("/keygen", response_model=KeyGenResponse)
+async def generate_keys(req: KeyGenRequest) -> JSONResponse:
+    """
+    Generate a device keypair (demo/testing only). Do not expose in production.
+
+    - ed25519: returns base64 private key and PEM public key
+    - rsa: returns PEM private/public keys
+    """
+    try:
+        if req.keyType == 'ed25519':
+            priv_b64, pub_pem = generate_ed25519_keypair()
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content=KeyGenResponse(keyType='ed25519', privateKey=priv_b64, publicKeyPEM=pub_pem).dict()
+            )
+        else:
+            priv_pem, pub_pem = generate_rsa_keypair(2048)
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content=KeyGenResponse(keyType='rsa', privateKey=priv_pem, publicKeyPEM=pub_pem).dict()
+            )
+    except Exception as e:
+        return _handle_error(e, "Key generation failed")
 
 
 # Global exception handler
