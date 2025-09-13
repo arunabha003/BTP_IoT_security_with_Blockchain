@@ -45,13 +45,10 @@ cd /path/to/BTP_IoT_security_with_Blockchain
 Set environment variable and deploy:
 
 ```bash
-export PRIVATE_KEY_ADMIN=0xac0974bec39a17e36ba4a6b4d238ff944bacb378cbed5efcae784d7bf4f2ff80
-export RPC_URL=http://127.0.0.1:8545
-
-forge script contracts/script/DeployRegistryMock.s.sol \
-  --broadcast \
-  --rpc-url $RPC_URL \
-  --private-key $PRIVATE_KEY_ADMIN
+  export RPC_URL=http://127.0.0.1:8545
+  export PRIVATE_KEY_ADMIN=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+  cd contracts
+  forge script script/DeployRegistryMock.s.sol --broadcast --rpc-url $RPC_URL --private-key $PRIVATE_KEY_ADMIN
 ```
 
 The output will show the deployed contract address. Copy it for the next step:
@@ -177,34 +174,23 @@ cast call $REG "getCurrentState()(bytes,bytes32,uint256)" --rpc-url $RPC_URL
 First, generate a test key pair for the device (you can use the existing key generator):
 
 ```bash
-cd .. # Back to project root
-# Use PYTHONPATH so the script can import accum/
-PYTHONPATH=. python3.11 - << 'PY'
-from accum.rsa_key_generator import generate_ed25519_keypair
-priv, pub = generate_ed25519_keypair()
-print('Private key (base64):', priv)
-print('Public key PEM:\n' + pub)
-PY
+PUB_PEM=$(curl -s -X POST http://127.0.0.1:8000/keygen \
+  -H "Content-Type: application/json" -d '{"keyType":"ed25519"}' \
+  | jq -r '.publicKeyPEM')
 ```
 
 Copy the public key PEM output, then enroll the device:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/enroll \
+curl -s -X POST http://127.0.0.1:8000/enroll \
   -H "Content-Type: application/json" \
-  -d '{
-    "publicKeyPEM": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA...\n-----END PUBLIC KEY-----",
-    "keyType": "ed25519"
-  }'
+  -d "$(jq -n --arg pem "$PUB_PEM" --arg kt "ed25519" '{publicKeyPEM:$pem, keyType:$kt}')"
 ```
 
 Expected response:
 ```json
 {
-  "deviceIdHex": "a1b2c3d4e5f6789...",
-  "idPrime": 123456789,
-  "witnessHex": "0000000...0004",
-  "rootHex": "abc123def456..."
+{"deviceIdHex":"8424f6f65ec723c17bed564d6105a30a90d8cf20a060c14294e762112c3dea2d","idPrime":73046701764652583113768529808202475898591418926378149777450666349220137023063,"witnessHex":"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004","rootHex":"a5af8ca7777fd49941bdcf9385ecabb0ce26d43f0be425e6a17205dca928d2835d5ddaac9ed10baa7434fe279b3b42266a2bad12df67486605d1dcf91a39471c88203c13f773ba92981ac6f4531029e3fea055134d853c4dc90e8b7bfbfecea3bd18fe7bfb4cf877538ecf468608d5e06a23f0a5dcd4bc2113925ab27c19ab9519042125ff60a5d2e690d7923725e267c616cbdf9296ce39edd8e043846f4fd97442beab5dbea9ebb806130ef380129b4db2d6a14c792ed18a149ba830dd9ca069d013bac2473b43353fc4cf30f02c1f41d081ae874644dce916b691eac7dd38e213ccc0e69e01da1ec1031826d8f46d43526111bbe97be960ae50cc8ed8140c"}
 }
 ```
 
