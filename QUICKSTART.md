@@ -169,120 +169,55 @@ cast call $REG "getCurrentState()(bytes,bytes32,uint256)" --rpc-url $RPC_URL
 
 ## Step 7: Complete End-to-End Test
 
-### 1. Enroll a Device
-
-First, generate a test key pair for the device (you can use the existing key generator):
+### One-shot end-to-end (Keygen → Enroll → Sign → Auth → Revoke)
 
 ```bash
-PUB_PEM=$(curl -s -X POST http://127.0.0.1:8000/keygen \
-  -H "Content-Type: application/json" -d '{"keyType":"ed25519"}' \
-  | jq -r '.publicKeyPEM')
-```
+source gateway/.venv311/bin/activate
+BASE=http://127.0.0.1:8000
 
-Copy the public key PEM output, then enroll the device:
+# 1) Keygen (single keypair used throughout)
+KEYGEN=$(curl -s -X POST $BASE/keygen -H 'Content-Type: application/json' -d '{"keyType":"ed25519"}')
+PUB_PEM=$(echo "$KEYGEN" | jq -r '.publicKeyPEM')
+PRI_KEY=$(echo "$KEYGEN" | jq -r '.privateKey')
 
-```bash
-curl -s -X POST http://127.0.0.1:8000/enroll \
-  -H "Content-Type: application/json" \
-  -d "$(jq -n --arg pem "$PUB_PEM" --arg kt "ed25519" '{publicKeyPEM:$pem, keyType:$kt}')"
-```
+# 2) Enroll with this public key
+ENROLL=$(curl -s -X POST $BASE/enroll -H 'Content-Type: application/json' \
+  -d "$(jq -n --arg pem "$PUB_PEM" --arg kt 'ed25519' '{publicKeyPEM:$pem, keyType:$kt}')")
+DEVICE_HEXID=$(echo "$ENROLL" | jq -r '.deviceIdHex')
+ID_PRIME=$(echo "$ENROLL" | jq -r '.idPrime')
+WITNESS_HEX=$(echo "$ENROLL" | jq -r '.witnessHex')
 
-Expected response:
-```json
-{
-{"deviceIdHex":"8424f6f65ec723c17bed564d6105a30a90d8cf20a060c14294e762112c3dea2d","idPrime":73046701764652583113768529808202475898591418926378149777450666349220137023063,"witnessHex":"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004","rootHex":"a5af8ca7777fd49941bdcf9385ecabb0ce26d43f0be425e6a17205dca928d2835d5ddaac9ed10baa7434fe279b3b42266a2bad12df67486605d1dcf91a39471c88203c13f773ba92981ac6f4531029e3fea055134d853c4dc90e8b7bfbfecea3bd18fe7bfb4cf877538ecf468608d5e06a23f0a5dcd4bc2113925ab27c19ab9519042125ff60a5d2e690d7923725e267c616cbdf9296ce39edd8e043846f4fd97442beab5dbea9ebb806130ef380129b4db2d6a14c792ed18a149ba830dd9ca069d013bac2473b43353fc4cf30f02c1f41d081ae874644dce916b691eac7dd38e213ccc0e69e01da1ec1031826d8f46d43526111bbe97be960ae50cc8ed8140c"}
-}
-```
-
-Save the `deviceIdHex`, `idPrime`, and `witnessHex` for the next steps.
-
-### 2. Authenticate the Device
-
-Generate a signature for authentication:
-
-```bash
-PYTHONPATH=. python3.11 - << 'PY'
+# 3) Sign a fresh nonce with the SAME private key
+JSON=$(PRI_KEY="$PRI_KEY" PYTHONPATH=. python - << 'PY'
 from accum.rsa_key_generator import generate_device_signature
-import secrets
-private_key = 'YOUR_PRIVATE_KEY_FROM_STEP_1'
+import secrets, json, os
+priv = os.environ['PRI_KEY']
 nonce = secrets.token_hex(16)
-signature = generate_device_signature(nonce, private_key, 'ed25519')
-print('Nonce:', nonce)
-print('Signature:', signature)
+sig = generate_device_signature(nonce, priv, 'ed25519')
+print(json.dumps({"nonce": nonce, "signature": sig}))
 PY
+)
+NONCE=$(echo "$JSON" | jq -r '.nonce')
+SIGNATURE=$(echo "$JSON" | jq -r '.signature')
+
+# 4) Auth
+curl -s -X POST $BASE/auth -H 'Content-Type: application/json' \
+  -d "$(jq -n \
+    --arg device "$DEVICE_HEXID" \
+    --arg idp "$ID_PRIME" \
+    --arg wit "$WITNESS_HEX" \
+    --arg sig "$SIGNATURE" \
+    --arg nonce "$NONCE" \
+    --arg pem "$PUB_PEM" \
+    --arg kt 'ed25519' \
+    '{deviceIdHex:$device, idPrime:$idp, witnessHex:$wit, signatureB64:$sig, nonceHex:$nonce, publicKeyPEM:$pem, keyType:$kt}')" | jq -r '.'
+
+# 5) Revoke (sanitize device id if needed)
+DEVICE_HEXID=$(echo "$DEVICE_HEXID" | tr -d '"' | tr -d ' \n\r\t')
+curl -s -X POST $BASE/revoke -H 'Content-Type: application/json' \
+  -d "$(jq -n --arg device "$DEVICE_HEXID" '{deviceIdHex:$device}')" | jq -r '.'
 ```
 
-Now authenticate:
-
-```bash
-curl -X POST http://127.0.0.1:8000/auth \
-  -H "Content-Type: application/json" \
-  -d '{
-    "deviceIdHex": "YOUR_DEVICE_ID_FROM_ENROLL",
-    "idPrime": YOUR_ID_PRIME_FROM_ENROLL,
-    "witnessHex": "YOUR_WITNESS_FROM_ENROLL", 
-    "signatureB64": "YOUR_SIGNATURE_FROM_ABOVE",
-    "nonceHex": "YOUR_NONCE_FROM_ABOVE",
-    "publicKeyPEM": "YOUR_PUBLIC_KEY_PEM",
-    "keyType": "ed25519"
-  }'
-```
-
-Expected response:
-```json
-{
-  "ok": true,
-  "newWitnessHex": null,
-  "message": "Authentication successful"
-}
-```
-
-### 3. Revoke the Device
-
-Revoke the device using trapdoor operations:
-
-```bash
-curl -X POST http://127.0.0.1:8000/revoke \
-  -H "Content-Type: application/json" \
-  -d '{
-    "deviceIdHex": "YOUR_DEVICE_ID_FROM_ENROLL"
-  }'
-```
-
-Expected response:
-```json
-{
-  "ok": true,
-  "rootHex": "new_accumulator_root_after_removal...",
-  "message": "Device revoked successfully"
-}
-```
-
-### 4. Verify Revocation
-
-Try to authenticate the revoked device again - it should fail:
-
-```bash
-curl -X POST http://127.0.0.1:8000/auth \
-  -H "Content-Type: application/json" \
-  -d '{
-    "deviceIdHex": "YOUR_DEVICE_ID_FROM_ENROLL",
-    "idPrime": YOUR_ID_PRIME_FROM_ENROLL,
-    "witnessHex": "YOUR_WITNESS_FROM_ENROLL",
-    "signatureB64": "YOUR_SIGNATURE",
-    "nonceHex": "YOUR_NONCE",
-    "publicKeyPEM": "YOUR_PUBLIC_KEY_PEM",
-    "keyType": "ed25519"
-  }'
-```
-
-Expected error response:
-```json
-{
-  "error": "Device is not active",
-  "code": "VALIDATION_ERROR"
-}
-```
 
 ## API Documentation
 
