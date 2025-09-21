@@ -37,6 +37,7 @@ from models import (
     RevokeRequest, RevokeResponse,
     RootResponse, StatusResponse,
     KeyGenRequest, KeyGenResponse,
+    WitnessResponse,
     ErrorResponse
 )
 
@@ -216,7 +217,36 @@ async def enroll_device(request: EnrollRequest) -> JSONResponse:
             status=DeviceStatus.ACTIVE
         )
         
+        # CRITICAL: Refresh witnesses for all existing active devices
+        # When a new device is added, all existing witnesses become stale
+        active_devices = db.get_active_devices()
+        all_active_primes = set(db.get_active_primes())  # Includes the new device
+        
+        refreshed_count = 0
+        for device in active_devices:
+            # Skip the newly enrolled device (it already has correct witness)
+            if device['device_id'] == device_id:
+                continue
+                
+            device_prime = device['id_prime']
+            if isinstance(device_prime, str):
+                device_prime = int(device_prime)
+                
+            # Compute fresh witness for this device
+            fresh_witness = refresh_witness(
+                target_p=device_prime,
+                set_primes=all_active_primes,
+                N=settings.N,
+                g=settings.g
+            )
+            fresh_witness_hex = settings.format_accumulator_to_hex(fresh_witness)
+            
+            # Update witness in database
+            db.update_device_witness(device['device_id'], fresh_witness_hex)
+            refreshed_count += 1
+            
         logger.info(f"Device enrolled successfully: {device_id_hex}")
+        logger.info(f"Refreshed witnesses for {refreshed_count} existing devices")
         
         return JSONResponse(
             status_code=status.HTTP_201_CREATED,
@@ -266,6 +296,8 @@ async def authenticate_device(request: AuthRequest) -> JSONResponse:
         
         # Parse witness from request
         witness_int = int(request.witnessHex, 16)
+        stored_witness_hex = device['witness']
+        new_witness_hex = None
         
         # Verify membership proof: witness^prime ≡ root (mod N)
         is_member = verify_membership(witness_int, request.idPrime, current_root, settings.N)
@@ -273,14 +305,20 @@ async def authenticate_device(request: AuthRequest) -> JSONResponse:
         if not is_member:
             logger.warning(f"Membership verification failed for device: {request.deviceIdHex}")
             # Try with stored witness in case client is outdated
-            stored_witness_int = int(device['witness'], 16) 
+            stored_witness_int = int(stored_witness_hex, 16) 
             is_member_stored = verify_membership(stored_witness_int, request.idPrime, current_root, settings.N)
             
             if not is_member_stored:
                 raise ValueError("Membership proof verification failed")
             else:
-                # Client has outdated witness, we'll provide updated one
-                witness_int = stored_witness_int
+                # Client has outdated witness, provide the current one
+                logger.info(f"Client has outdated witness, returning updated witness")
+                new_witness_hex = stored_witness_hex
+        
+        # Check if client witness differs from stored (even if verification passed)
+        elif request.witnessHex != stored_witness_hex:
+            logger.info(f"Client witness differs from stored, returning updated witness")
+            new_witness_hex = stored_witness_hex
         
         # Verify cryptographic signature (signing is over the nonce hex string itself)
         is_signature_valid = verify_device_signature(
@@ -293,33 +331,14 @@ async def authenticate_device(request: AuthRequest) -> JSONResponse:
         if not is_signature_valid:
             raise ValueError("Signature verification failed")
         
-        # Check if witness needs updating
-        stored_witness_hex = device['witness']
-        new_witness_hex = None
-        
-        if stored_witness_hex != request.witnessHex:
-            # Witness is outdated, compute fresh witness
-            active_primes = db.get_active_primes()
-            if request.idPrime in active_primes:
-                fresh_witness = refresh_witness(
-                    target_p=request.idPrime,
-                    set_primes=set(active_primes),
-                    N=settings.N,
-                    g=settings.g
-                )
-                new_witness_hex = settings.format_accumulator_to_hex(fresh_witness)
-                
-                # Update stored witness
-                db.update_device_witness(device_id, new_witness_hex)
-                logger.info(f"Updated witness for device: {request.deviceIdHex}")
-        
+        # Authentication successful
         logger.info(f"Device authenticated successfully: {request.deviceIdHex}")
         
         return JSONResponse(
             status_code=status.HTTP_200_OK,
             content=AuthResponse(
                 ok=True,
-                newWitnessHex=new_witness_hex,
+                newWitnessHex=new_witness_hex,  # Return updated witness if client is outdated
                 message="Authentication successful"
             ).dict()
         )
@@ -378,7 +397,32 @@ async def revoke_device(request: RevokeRequest) -> JSONResponse:
         # Mark device as revoked in database
         db.update_device_status(device_id, DeviceStatus.REVOKED)
         
+        # CRITICAL: Refresh witnesses for all remaining active devices  
+        # When a device is revoked, all remaining witnesses become stale
+        active_devices = db.get_active_devices()
+        all_active_primes = set(db.get_active_primes())  # Excludes the revoked device
+        
+        refreshed_count = 0
+        for active_device in active_devices:
+            device_prime = active_device['id_prime']
+            if isinstance(device_prime, str):
+                device_prime = int(device_prime)
+                
+            # Compute fresh witness for this remaining active device
+            fresh_witness = refresh_witness(
+                target_p=device_prime,
+                set_primes=all_active_primes,
+                N=settings.N,
+                g=settings.g
+            )
+            fresh_witness_hex = settings.format_accumulator_to_hex(fresh_witness)
+            
+            # Update witness in database
+            db.update_device_witness(active_device['device_id'], fresh_witness_hex)
+            refreshed_count += 1
+            
         logger.info(f"Device revoked successfully: {request.deviceIdHex}")
+        logger.info(f"Refreshed witnesses for {refreshed_count} remaining active devices")
         
         return JSONResponse(
             status_code=status.HTTP_200_OK,
@@ -459,7 +503,9 @@ async def root():
             "POST /auth": "Authenticate device", 
             "POST /revoke": "Revoke device",
             "GET /root": "Get accumulator root",
-            "GET /status": "Get system status"
+            "GET /status": "Get system status",
+            "POST /keygen": "Generate test keypair (demo only)",
+            "GET /witness/{deviceIdHex}": "Get device witness"
         }
     }
 
@@ -488,6 +534,51 @@ async def generate_keys(req: KeyGenRequest) -> JSONResponse:
             )
     except Exception as e:
         return _handle_error(e, "Key generation failed")
+
+
+@app.get("/witness/{device_id_hex}", response_model=WitnessResponse)
+async def get_device_witness(device_id_hex: str) -> JSONResponse:
+    """
+    Get the current witness for a specific device.
+    
+    This endpoint returns the latest witness stored in the database,
+    which is kept fresh by enrollment and revocation operations.
+    """
+    try:
+        # Validate device ID format
+        if len(device_id_hex) != 64:
+            raise ValueError("Device ID must be 64 hex characters")
+        
+        # Get device from database
+        device_id = bytes.fromhex(device_id_hex)
+        device = db.get_device(device_id)
+        
+        if not device:
+            raise ValueError("Device not found")
+        
+        # Return current witness and device status
+        status_map = {
+            DeviceStatus.ACTIVE: "active",
+            DeviceStatus.REVOKED: "revoked"
+        }
+        
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content=WitnessResponse(
+                deviceIdHex=device_id_hex.lower(),
+                witnessHex=device['witness'],
+                status=status_map.get(device['status'], 'unknown'),
+                lastUpdated=device['updated_at']
+            ).dict()
+        )
+        
+    except ValueError as e:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"error": str(e), "code": "INVALID_REQUEST"}
+        )
+    except Exception as e:
+        return _handle_error(e, "Failed to get device witness")
 
 
 # Global exception handler

@@ -174,6 +174,14 @@ class KeyGenResponse(BaseModel):
     publicKeyPEM: str
 
 
+class WitnessResponse(BaseModel):
+    """Response model for witness query."""
+    deviceIdHex: str = Field(..., description="Device ID as hex string")
+    witnessHex: str = Field(..., description="Current witness as hex string")
+    status: str = Field(..., description="Device status (active/revoked)")
+    lastUpdated: str = Field(..., description="When witness was last updated")
+
+
 # Utility Models for Testing
 
 class TestEnrollRequest(BaseModel):
