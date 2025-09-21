@@ -176,19 +176,31 @@ source gateway/.venv311/bin/activate
 BASE=http://127.0.0.1:8000
 
 # 1) Keygen (single keypair used throughout)
-KEYGEN=$(curl -s -X POST $BASE/keygen -H 'Content-Type: application/json' -d '{"keyType":"ed25519"}')
-PUB_PEM=$(echo "$KEYGEN" | jq -r '.publicKeyPEM')
-PRI_KEY=$(echo "$KEYGEN" | jq -r '.privateKey')
+KEYGEN1=$(curl -s -X POST $BASE/keygen -H 'Content-Type: application/json' -d '{"keyType":"ed25519"}')
+PUB_PEM1=$(echo "$KEYGEN1" | jq -r '.publicKeyPEM')
+PRI_KEY1=$(echo "$KEYGEN1" | jq -r '.privateKey')
+
+
+KEYGEN2=$(curl -s -X POST $BASE/keygen -H 'Content-Type: application/json' -d '{"keyType":"ed25519"}')
+PUB_PEM2=$(echo "$KEYGEN2" | jq -r '.publicKeyPEM')
+PRI_KEY2=$(echo "$KEYGEN2" | jq -r '.privateKey')
 
 # 2) Enroll with this public key
-ENROLL=$(curl -s -X POST $BASE/enroll -H 'Content-Type: application/json' \
-  -d "$(jq -n --arg pem "$PUB_PEM" --arg kt 'ed25519' '{publicKeyPEM:$pem, keyType:$kt}')")
-DEVICE_HEXID=$(echo "$ENROLL" | jq -r '.deviceIdHex')
-ID_PRIME=$(echo "$ENROLL" | jq -r '.idPrime')
-WITNESS_HEX=$(echo "$ENROLL" | jq -r '.witnessHex')
+ENROLL1=$(curl -s -X POST $BASE/enroll -H 'Content-Type: application/json' \
+  -d "$(jq -n --arg pem "$PUB_PEM1" --arg kt 'ed25519' '{publicKeyPEM:$pem, keyType:$kt}')")
+DEVICE_HEXID1=$(echo "$ENROLL1" | jq -r '.deviceIdHex')
+ID_PRIME1=$(echo "$ENROLL1" | jq -r '.idPrime')
+WITNESS_HEX1=$(echo "$ENROLL1" | jq -r '.witnessHex')
+
+
+ENROLL2=$(curl -s -X POST $BASE/enroll -H 'Content-Type: application/json' \
+  -d "$(jq -n --arg pem "$PUB_PEM2" --arg kt 'ed25519' '{publicKeyPEM:$pem, keyType:$kt}')")
+DEVICE_HEXID2=$(echo "$ENROLL2" | jq -r '.deviceIdHex')
+ID_PRIME2=$(echo "$ENROLL2" | jq -r '.idPrime')
+WITNESS_HEX2=$(echo "$ENROLL2" | jq -r '.witnessHex')
 
 # 3) Sign a fresh nonce with the SAME private key
-JSON=$(PRI_KEY="$PRI_KEY" PYTHONPATH=. python - << 'PY'
+JSON1=$(PRI_KEY="$PRI_KEY1" PYTHONPATH=. python - << 'PY'
 from accum.rsa_key_generator import generate_device_signature
 import secrets, json, os
 priv = os.environ['PRI_KEY']
@@ -197,25 +209,70 @@ sig = generate_device_signature(nonce, priv, 'ed25519')
 print(json.dumps({"nonce": nonce, "signature": sig}))
 PY
 )
-NONCE=$(echo "$JSON" | jq -r '.nonce')
-SIGNATURE=$(echo "$JSON" | jq -r '.signature')
+NONCE1=$(echo "$JSON1" | jq -r '.nonce')
+SIGNATURE1=$(echo "$JSON1" | jq -r '.signature')
+
+
+JSON2=$(PRI_KEY="$PRI_KEY2" PYTHONPATH=. python - << 'PY'
+from accum.rsa_key_generator import generate_device_signature
+import secrets, json, os
+priv = os.environ['PRI_KEY']
+nonce = secrets.token_hex(16)
+sig = generate_device_signature(nonce, priv, 'ed25519')
+print(json.dumps({"nonce": nonce, "signature": sig}))
+PY
+)
+NONCE2=$(echo "$JSON2" | jq -r '.nonce')
+SIGNATURE2=$(echo "$JSON2" | jq -r '.signature')
+
+
 
 # 4) Auth
 curl -s -X POST $BASE/auth -H 'Content-Type: application/json' \
   -d "$(jq -n \
-    --arg device "$DEVICE_HEXID" \
-    --arg idp "$ID_PRIME" \
-    --arg wit "$WITNESS_HEX" \
-    --arg sig "$SIGNATURE" \
-    --arg nonce "$NONCE" \
-    --arg pem "$PUB_PEM" \
+    --arg device "$DEVICE_HEXID1" \
+    --arg idp "$ID_PRIME1" \
+    --arg wit "$WITNESS_HEX1" \
+    --arg sig "$SIGNATURE1" \
+    --arg nonce "$NONCE1" \
+    --arg pem "$PUB_PEM1" \
     --arg kt 'ed25519' \
     '{deviceIdHex:$device, idPrime:$idp, witnessHex:$wit, signatureB64:$sig, nonceHex:$nonce, publicKeyPEM:$pem, keyType:$kt}')" | jq -r '.'
 
+
+curl -s -X POST $BASE/auth -H 'Content-Type: application/json' \
+  -d "$(jq -n \
+    --arg device "$DEVICE_HEXID2" \
+    --arg idp "$ID_PRIME2" \
+    --arg wit "$WITNESS_HEX2" \
+    --arg sig "$SIGNATURE2" \
+    --arg nonce "$NONCE2" \
+    --arg pem "$PUB_PEM2" \
+    --arg kt 'ed25519' \
+    '{deviceIdHex:$device, idPrime:$idp, witnessHex:$wit, signatureB64:$sig, nonceHex:$nonce, publicKeyPEM:$pem, keyType:$kt}')" | jq -r '.'
+
+
+
 # 5) Revoke (sanitize device id if needed)
-DEVICE_HEXID=$(echo "$DEVICE_HEXID" | tr -d '"' | tr -d ' \n\r\t')
+DEVICE_HEXID1=$(echo "$DEVICE_HEXID1" | tr -d '"' | tr -d ' \n\r\t')
 curl -s -X POST $BASE/revoke -H 'Content-Type: application/json' \
-  -d "$(jq -n --arg device "$DEVICE_HEXID" '{deviceIdHex:$device}')" | jq -r '.'
+  -d "$(jq -n --arg device "$DEVICE_HEXID1" '{deviceIdHex:$device}')" | jq -r '.'
+
+
+DEVICE_HEXID2=$(echo "$DEVICE_HEXID2" | tr -d '"' | tr -d ' \n\r\t')
+curl -s -X POST $BASE/revoke -H 'Content-Type: application/json' \
+  -d "$(jq -n --arg device "$DEVICE_HEXID2" '{deviceIdHex:$device}')" | jq -r '.'
+
+
+
+# 6) Get witness
+
+curl -s $BASE/witness/$DEVICE_HEXID1 | jq '.'
+
+curl -s $BASE/witness/$DEVICE_HEXID2 | jq '.'
+
+
+
 ```
 
 
@@ -244,6 +301,34 @@ Once the gateway is running, you can access the interactive API documentation at
 
 ✅ **Cryptographic verification**: Device signatures are verified using Ed25519/RSA  
 ✅ **Witness management**: Witnesses are updated automatically when the accumulator changes
+
+## Witness Management
+
+The system now provides robust witness management:
+
+### Get Device Witness
+```bash
+curl -s $BASE/witness/{deviceIdHex} | jq '.'
+```
+
+### Witness Update Flow
+1. **Enrollment/Revocation**: Witnesses auto-refresh in database
+2. **Authentication**: 
+   - If device sends current witness → `newWitnessHex: null`
+   - If device sends outdated witness → `newWitnessHex: "updated_witness"`
+3. **Device should store returned `newWitnessHex` for future use**
+
+### Example Witness Update
+```bash
+# Device uses old witness in auth
+AUTH=$(curl -s -X POST $BASE/auth -H 'Content-Type: application/json' -d '{...old witness...}')
+NEW_WITNESS=$(echo "$AUTH" | jq -r '.newWitnessHex')
+
+# If not null, device should update its stored witness
+if [ "$NEW_WITNESS" != "null" ]; then
+  echo "Updating local witness: $NEW_WITNESS"
+fi
+```
 
 ## Troubleshooting
 
