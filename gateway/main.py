@@ -219,8 +219,12 @@ async def enroll_device(request: EnrollRequest) -> JSONResponse:
         
         # CRITICAL: Refresh witnesses for all existing active devices
         # When a new device is added, all existing witnesses become stale
+        # We use trapdoor division to compute: witness = new_root^(1/prime) mod N
         active_devices = db.get_active_devices()
-        all_active_primes = set(db.get_active_primes())  # Includes the new device
+        
+        # Get the NEW accumulator root (after syncing with blockchain)
+        new_root_after_sync_hex = db.get_meta(MetaKeys.ROOT_HEX)
+        new_root_after_sync = settings.parse_accumulator_from_hex(new_root_after_sync_hex)
         
         refreshed_count = 0
         for device in active_devices:
@@ -232,12 +236,14 @@ async def enroll_device(request: EnrollRequest) -> JSONResponse:
             if isinstance(device_prime, str):
                 device_prime = int(device_prime)
                 
-            # Compute fresh witness for this device
-            fresh_witness = refresh_witness(
-                target_p=device_prime,
-                set_primes=all_active_primes,
+            # Compute fresh witness using trapdoor division:
+            # witness = new_root^(1/device_prime) mod N
+            # This gives us the accumulator without this device's prime
+            fresh_witness = trapdoor_remove_member_with_lambda(
+                A=new_root_after_sync,
+                prime=device_prime,
                 N=settings.N,
-                g=settings.g
+                lambda_n=settings.lambda_n
             )
             fresh_witness_hex = settings.format_accumulator_to_hex(fresh_witness)
             
@@ -399,8 +405,12 @@ async def revoke_device(request: RevokeRequest) -> JSONResponse:
         
         # CRITICAL: Refresh witnesses for all remaining active devices  
         # When a device is revoked, all remaining witnesses become stale
+        # We use trapdoor division to compute: witness = new_root^(1/prime) mod N
         active_devices = db.get_active_devices()
-        all_active_primes = set(db.get_active_primes())  # Excludes the revoked device
+        
+        # Get the NEW accumulator root (after syncing with blockchain)
+        new_root_after_sync_hex = db.get_meta(MetaKeys.ROOT_HEX)
+        new_root_after_sync = settings.parse_accumulator_from_hex(new_root_after_sync_hex)
         
         refreshed_count = 0
         for active_device in active_devices:
@@ -408,12 +418,14 @@ async def revoke_device(request: RevokeRequest) -> JSONResponse:
             if isinstance(device_prime, str):
                 device_prime = int(device_prime)
                 
-            # Compute fresh witness for this remaining active device
-            fresh_witness = refresh_witness(
-                target_p=device_prime,
-                set_primes=all_active_primes,
+            # Compute fresh witness using trapdoor division:
+            # witness = new_root^(1/device_prime) mod N
+            # This gives us the accumulator without this device's prime
+            fresh_witness = trapdoor_remove_member_with_lambda(
+                A=new_root_after_sync,
+                prime=device_prime,
                 N=settings.N,
-                g=settings.g
+                lambda_n=settings.lambda_n
             )
             fresh_witness_hex = settings.format_accumulator_to_hex(fresh_witness)
             
