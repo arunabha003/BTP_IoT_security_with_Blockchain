@@ -520,3 +520,6 @@ Thumbs.db
 !README.md
 !.env.example
 !env.example
+
+# Device data
+iot_device/device_state/state.json
