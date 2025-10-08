@@ -200,7 +200,7 @@ ID_PRIME2=$(echo "$ENROLL2" | jq -r '.idPrime')
 WITNESS_HEX2=$(echo "$ENROLL2" | jq -r '.witnessHex')
 
 # 3) Sign a fresh nonce with the SAME private key
-JSON1=$(PRI_KEY="$PRI_KEY1" PYTHONPATH=. python - << 'PY'
+JSON1=$(PRI_KEY="$PRI_KEY1" PYTHONPATH=. python3 - << 'PY'
 from accum.rsa_key_generator import generate_device_signature
 import secrets, json, os
 priv = os.environ['PRI_KEY']
@@ -213,7 +213,7 @@ NONCE1=$(echo "$JSON1" | jq -r '.nonce')
 SIGNATURE1=$(echo "$JSON1" | jq -r '.signature')
 
 
-JSON2=$(PRI_KEY="$PRI_KEY2" PYTHONPATH=. python - << 'PY'
+JSON2=$(PRI_KEY="$PRI_KEY2" PYTHONPATH=. python3 - << 'PY'
 from accum.rsa_key_generator import generate_device_signature
 import secrets, json, os
 priv = os.environ['PRI_KEY']
@@ -380,3 +380,53 @@ The current setup is designed for MVP testing on Anvil. For production deploymen
 ```
 
 The gateway acts as the trusted accumulator manager, using trapdoor operations to efficiently add and remove devices while maintaining blockchain state consistency.
+
+## IoT Device Scripts (Raspberry Pi)
+
+Use these minimal scripts in `iot_device/` to simulate devices.
+
+### Setup once on the device
+
+```bash
+cd iot_device
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Single device (default state folder)
+
+```bash
+# Generate keypair
+python keygen.py
+
+# Enroll (pass gateway if not localhost)
+python enroll.py http://127.0.0.1:8000
+
+# Authenticate
+python auth.py http://127.0.0.1:8000
+
+# (Optional) Fetch/refresh witness
+python get_witness.py http://127.0.0.1:8000
+```
+
+### Multiple devices (separate state per device)
+
+```bash
+# Enroll 3 devices
+for i in 1 2 3; do 
+  export DEVICE_STATE_DIR=./device_state_$i
+  python keygen.py
+  python enroll.py http://127.0.0.1:8000
+done
+
+# Authenticate all
+for i in 1 2 3; do 
+  export DEVICE_STATE_DIR=./device_state_$i
+  python auth.py http://127.0.0.1:8000
+done
+```
+
+Notes:
+- `DEVICE_STATE_DIR` selects the folder where each script reads/writes `state.json`.
+- Omit the base URL argument to use the default `http://127.0.0.1:8000`.
