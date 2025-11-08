@@ -16,7 +16,6 @@ The IoT Identity Gateway provides a REST API for managing IoT device identities 
 - **Foundry** (for smart contracts and Anvil)
 - **Python 3.11** (for the gateway; we use a 3.11 venv)
 - **pip** (Python package manager)
-
 ## Step 1: Start Anvil
 
 Open a terminal and start the local Ethereum node:

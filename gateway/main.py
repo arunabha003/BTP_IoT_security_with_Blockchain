@@ -29,7 +29,7 @@ from accum.witness_refresh import update_witness_on_addition, refresh_witness
 
 # Import gateway modules  
 from settings import settings
-from db import DatabaseManager, DeviceStatus, MetaKeys
+from supabase_db import SupabaseDatabaseManager as DatabaseManager, DeviceStatus, MetaKeys
 from chain_client import ChainClient
 from models import (
     EnrollRequest, EnrollResponse,
@@ -69,7 +69,7 @@ async def startup_event():
         logger.info("Starting IoT Identity Gateway...")
         
         # Initialize database
-        db = DatabaseManager(settings.db_path)
+        db = DatabaseManager(settings.supabase_url, settings.supabase_key)
         logger.info("Database initialized")
         
         # Initialize blockchain client

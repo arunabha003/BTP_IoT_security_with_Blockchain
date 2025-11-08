@@ -30,7 +30,11 @@ class Settings:
         # Trapdoor information (KEEP SECRET)
         self.lambda_n_hex: str = os.getenv("LAMBDA_N_HEX", "")
         
-        # Database settings
+        # Database settings - Supabase
+        self.supabase_url: str = os.getenv("SUPABASE_URL", "")
+        self.supabase_key: str = os.getenv("SUPABASE_KEY", "")
+        
+        # Database settings - SQLite (legacy, kept for backwards compatibility)
         self.db_path: str = os.getenv("DB_PATH", "gateway.db")
         
         # Server settings
@@ -53,6 +57,13 @@ class Settings:
         
         if not self.lambda_n_hex:
             raise ValueError("LAMBDA_N_HEX must be set")
+        
+        # Validate Supabase credentials
+        if not self.supabase_url:
+            raise ValueError("SUPABASE_URL must be set")
+        
+        if not self.supabase_key:
+            raise ValueError("SUPABASE_KEY must be set")
         
         # Validate hex format
         try:
