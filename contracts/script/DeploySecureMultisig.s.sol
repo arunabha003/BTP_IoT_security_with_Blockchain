@@ -35,12 +35,13 @@ contract DeploySecureMultisig is Script {
         console.log("Emergency admin:", emergencyAdmin);
         
         // 3. Setup initial multisig owners (3-of-5 for production security)
+        //    Use Anvil's first 5 default accounts for easy testing
         address[] memory owners = new address[](5);
-        owners[0] = vm.addr(1); // CEO/Founder
-        owners[1] = vm.addr(2); // CTO
-        owners[2] = vm.addr(3); // Security Lead  
-        owners[3] = vm.addr(4); // DevOps Lead
-        owners[4] = vm.addr(5); // External Security Auditor
+        owners[0] = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266; // Anvil account 0
+        owners[1] = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8; // Anvil account 1
+        owners[2] = 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC; // Anvil account 2
+        owners[3] = 0x90F79bf6EB2c4f870365E785982E1f101E93b906; // Anvil account 3
+        owners[4] = 0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65; // Anvil account 4
         
         uint256 threshold = 3; // 3-of-5 multisig
         
@@ -79,7 +80,10 @@ contract DeploySecureMultisig is Script {
         console.log("Safe threshold:", threshold);
         
         // 5. Deploy AccumulatorRegistry with multisig-only access
-        bytes memory initialAccumulator = abi.encodePacked(keccak256(abi.encode(block.timestamp, "INITIAL")));
+        // Initial accumulator = g = 4 (as a 256-byte big-endian value)
+        bytes memory initialAccumulator = new bytes(256);
+        initialAccumulator[255] = 0x04; // g = 4 at the least significant byte
+        
         registry = new AccumulatorRegistry(
             initialAccumulator,
             address(manager),
