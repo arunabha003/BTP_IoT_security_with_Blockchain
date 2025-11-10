@@ -21,7 +21,21 @@ class Settings:
         # Blockchain settings
         self.rpc_url: str = os.getenv("RPC_URL", "http://127.0.0.1:8545")
         self.private_key_admin: str = os.getenv("PRIVATE_KEY_ADMIN", "")
-        self.registry_address: str = os.getenv("REGISTRY_ADDRESS", "")
+        self.registry_address: str = os.getenv("REGISTRY_ADDRESS", "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9")
+        
+        # Multi-sig settings (always enabled)
+        self.safe_address: str = os.getenv("SAFE_ADDRESS", "0xacE06dCBd8caea79853A0Fd4aF0E4Ce318FbA26F")
+        self.multisig_manager_address: str = os.getenv("MULTISIG_MANAGER_ADDRESS", "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0")
+        
+        # Safe owners (for validation) - Anvil default accounts (0-4)
+        self.safe_owners: list = [
+            "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",  # Anvil Account 0
+            "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",  # Anvil Account 1
+            "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",  # Anvil Account 2
+            "0x90F79bf6EB2c4f870365E785982E1f101E93b906",  # Anvil Account 3
+            "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"   # Anvil Account 4
+        ]
+        self.safe_threshold: int = 3
         
         # RSA Accumulator parameters (from params.json)
         self.n_hex: str = os.getenv("N_HEX", "")
@@ -94,67 +108,77 @@ class Settings:
         return int(self.lambda_n_hex, 16)
     
     def get_registry_abi(self) -> list:
-        """Get minimal ABI for RegistryMock contract."""
+        """Get ABI for AccumulatorRegistry contract (multi-sig version)."""
+        # AccumulatorRegistry ABI (multi-sig version only)
         return [
-            {
-                "inputs": [{"internalType": "bytes", "name": "initialAccumulator", "type": "bytes"}],
-                "stateMutability": "nonpayable",
-                "type": "constructor"
-            },
             {
                 "inputs": [],
                 "name": "getCurrentState", 
                 "outputs": [
                     {"internalType": "bytes", "name": "accumulator", "type": "bytes"},
                     {"internalType": "bytes32", "name": "hash", "type": "bytes32"},
-                    {"internalType": "uint256", "name": "ver", "type": "uint256"}
+                    {"internalType": "uint256", "name": "ver", "type": "uint256"},
+                    {"internalType": "address", "name": "currentSafe", "type": "address"},
+                    {"internalType": "uint256", "name": "safeThreshold", "type": "uint256"},
+                    {"internalType": "uint256", "name": "safeOwnerCount", "type": "uint256"},
+                    {"internalType": "bool", "name": "paused", "type": "bool"}
                 ],
                 "stateMutability": "view",
                 "type": "function"
             },
             {
-                "inputs": [
-                    {"internalType": "bytes", "name": "newAccumulator", "type": "bytes"},
-                    {"internalType": "bytes32", "name": "parentHash", "type": "bytes32"},
-                    {"internalType": "bytes32", "name": "operationId", "type": "bytes32"}
-                ],
-                "name": "updateAccumulator",
-                "outputs": [],
-                "stateMutability": "nonpayable",
-                "type": "function"
-            },
-            {
-                "inputs": [
-                    {"internalType": "bytes", "name": "deviceId", "type": "bytes"},
-                    {"internalType": "bytes", "name": "newAccumulator", "type": "bytes"}, 
-                    {"internalType": "bytes32", "name": "parentHash", "type": "bytes32"},
-                    {"internalType": "bytes32", "name": "operationId", "type": "bytes32"}
-                ],
-                "name": "registerDevice",
-                "outputs": [],
-                "stateMutability": "nonpayable",
-                "type": "function"
-            },
-            {
-                "inputs": [
-                    {"internalType": "bytes", "name": "deviceId", "type": "bytes"},
-                    {"internalType": "bytes", "name": "newAccumulator", "type": "bytes"},
-                    {"internalType": "bytes32", "name": "parentHash", "type": "bytes32"},
-                    {"internalType": "bytes32", "name": "operationId", "type": "bytes32"}
-                ],
-                "name": "revokeDevice",
-                "outputs": [],
-                "stateMutability": "nonpayable", 
-                "type": "function"
-            },
-            {
-                "inputs": [],
-                "name": "owner",
-                "outputs": [{"internalType": "address", "name": "", "type": "address"}],
-                "stateMutability": "view",
-                "type": "function"
-            }
-        ]
+                    "inputs": [
+                        {"internalType": "bytes", "name": "deviceId", "type": "bytes"},
+                        {"internalType": "bytes", "name": "newAccumulator", "type": "bytes"}, 
+                        {"internalType": "bytes32", "name": "parentHash", "type": "bytes32"},
+                        {"internalType": "bytes32", "name": "operationId", "type": "bytes32"}
+                    ],
+                    "name": "registerDevice",
+                    "outputs": [],
+                    "stateMutability": "nonpayable",
+                    "type": "function"
+                },
+                {
+                    "inputs": [
+                        {"internalType": "bytes", "name": "deviceId", "type": "bytes"},
+                        {"internalType": "bytes", "name": "newAccumulator", "type": "bytes"},
+                        {"internalType": "bytes32", "name": "parentHash", "type": "bytes32"},
+                        {"internalType": "bytes32", "name": "operationId", "type": "bytes32"}
+                    ],
+                    "name": "revokeDevice",
+                    "outputs": [],
+                    "stateMutability": "nonpayable", 
+                    "type": "function"
+                },
+                {
+                    "inputs": [],
+                    "name": "authorizedSafe",
+                    "outputs": [{"internalType": "address", "name": "", "type": "address"}],
+                    "stateMutability": "view",
+                    "type": "function"
+                },
+                {
+                    "inputs": [],
+                    "name": "version",
+                    "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+                    "stateMutability": "view",
+                    "type": "function"
+                },
+                {
+                    "inputs": [],
+                    "name": "currentAccumulator",
+                    "outputs": [{"internalType": "bytes", "name": "", "type": "bytes"}],
+                    "stateMutability": "view",
+                    "type": "function"
+                },
+                {
+                    "inputs": [],
+                    "name": "storedHash",
+                    "outputs": [{"internalType": "bytes32", "name": "", "type": "bytes32"}],
+                    "stateMutability": "view",
+                    "type": "function"
+                }
+            ]
     
     def format_accumulator_to_hex(self, accumulator_int: int) -> str:
         """Format accumulator integer to 256-byte hex string."""
@@ -168,7 +192,7 @@ class Settings:
         if hex_str.startswith('0x'):
             hex_str = hex_str[2:]
         
-        # Ensure it's 512 hex chars (256 bytes)
+        # Ensure it's 512 hex chars (256 bytes) for RSA accumulator
         if len(hex_str) != 512:
             raise ValueError(f"Accumulator hex must be 512 chars (256 bytes), got {len(hex_str)}")
         

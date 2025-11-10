@@ -11,9 +11,11 @@ import logging
 import hashlib
 import secrets
 import traceback
-from typing import Dict, Any
+from datetime import datetime
+from typing import Dict, Any, Optional
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from cryptography.hazmat.primitives import serialization
 
 # Add parent directory to path for importing accumulator modules
@@ -38,6 +40,7 @@ from models import (
     RootResponse, StatusResponse,
     KeyGenRequest, KeyGenResponse,
     WitnessResponse,
+    DeviceListResponse,
     ErrorResponse
 )
 
@@ -53,6 +56,15 @@ app = FastAPI(
     title="IoT Identity Gateway",
     description="RSA Accumulator-based IoT Device Identity Management System",
     version="1.0.0"
+)
+
+# Configure CORS for frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Global instances
@@ -200,24 +212,50 @@ async def enroll_device(request: EnrollRequest) -> JSONResponse:
         new_root = add_member(current_root, id_prime, settings.N)
         new_root_hex = settings.format_accumulator_to_hex(new_root)
         
-        # Update blockchain
-        tx_hash = chain.register_device(device_id_hex, new_root_hex)
-        logger.info(f"Blockchain updated: {tx_hash}")
+        # Update blockchain (multi-sig mode only)
+        result = chain.register_device(device_id_hex, new_root_hex)
         
-        # Sync state from blockchain
-        await _sync_blockchain_state()
+        # Result is always (safe_tx_hash, tx_params) in multi-sig mode
+        tx_hash, tx_params = result
+        logger.warning(f"⚠️  Multi-sig enrollment pending: {tx_hash}")
         
-        # Store device in database (witness = previous root)
-        db.insert_device(
-            device_id=device_id,
-            pubkey_pem=request.publicKeyPEM,
-            id_prime=id_prime,
-            witness=current_root_hex,  # Witness for membership proof
-            key_type=request.keyType,
-            status=DeviceStatus.ACTIVE
+        # Store pending transaction with metadata and Safe parameters
+        pending_multisig_txs[tx_hash] = {
+            'safeTxHash': tx_hash,
+            'operationType': 'enroll',
+            'type': 'registerDevice',
+            'device_id': device_id_hex,
+            'deviceIdHex': device_id_hex,
+            'pubkey_pem': request.publicKeyPEM,
+            'id_prime': str(id_prime),
+            'witness': current_root_hex,
+            'key_type': request.keyType,
+            'newAccumulator': new_root_hex,
+            'oldAccumulator': current_root_hex,
+            # Safe transaction parameters from chain_client
+            **tx_params,
+            # Metadata
+            'signatures': [],
+            'status': 'pending',
+            'proposer': settings.safe_owners[0] if settings.safe_owners else '0x0000000000000000000000000000000000000000',
+            'createdAt': datetime.now().isoformat(),
+            'required_signatures': 3
+        }
+        
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "pending",
+                "message": "Device enrollment requires multi-sig approval",
+                "safeTxHash": tx_hash,
+                "device_id": device_id_hex,
+                "deviceIdHex": device_id_hex,
+                "idPrime": str(id_prime),
+                "witnessHex": current_root_hex,
+                "required_signatures": 3,
+                "multisig_url": "http://localhost:3000/multisig-approve"
+            }
         )
-        
-        # CRITICAL: Refresh witnesses for all existing active devices
         # When a new device is added, all existing witnesses become stale
         # We use trapdoor division to compute: witness = new_root^(1/prime) mod N
         active_devices = db.get_active_devices()
@@ -393,56 +431,43 @@ async def revoke_device(request: RevokeRequest) -> JSONResponse:
         
         logger.info(f"Trapdoor removal complete: {device['id_prime']}")
         
-        # Update blockchain
-        tx_hash = chain.revoke_device(request.deviceIdHex, new_root_hex)
-        logger.info(f"Blockchain updated: {tx_hash}")
+        # Update blockchain (multi-sig mode only)
+        result = chain.revoke_device(request.deviceIdHex, new_root_hex)
         
-        # Sync state from blockchain
-        await _sync_blockchain_state()
+        # Result is always (safe_tx_hash, tx_params) in multi-sig mode
+        tx_hash, tx_params = result
+        logger.warning(f"⚠️  Multi-sig revocation pending: {tx_hash}")
         
-        # Mark device as revoked in database
-        db.update_device_status(device_id, DeviceStatus.REVOKED)
-        
-        # CRITICAL: Refresh witnesses for all remaining active devices  
-        # When a device is revoked, all remaining witnesses become stale
-        # We use trapdoor division to compute: witness = new_root^(1/prime) mod N
-        active_devices = db.get_active_devices()
-        
-        # Get the NEW accumulator root (after syncing with blockchain)
-        new_root_after_sync_hex = db.get_meta(MetaKeys.ROOT_HEX)
-        new_root_after_sync = settings.parse_accumulator_from_hex(new_root_after_sync_hex)
-        
-        refreshed_count = 0
-        for active_device in active_devices:
-            device_prime = active_device['id_prime']
-            if isinstance(device_prime, str):
-                device_prime = int(device_prime)
-                
-            # Compute fresh witness using trapdoor division:
-            # witness = new_root^(1/device_prime) mod N
-            # This gives us the accumulator without this device's prime
-            fresh_witness = trapdoor_remove_member_with_lambda(
-                A=new_root_after_sync,
-                prime=device_prime,
-                N=settings.N,
-                lambda_n=settings.lambda_n
-            )
-            fresh_witness_hex = settings.format_accumulator_to_hex(fresh_witness)
-            
-            # Update witness in database
-            db.update_device_witness(active_device['device_id'], fresh_witness_hex)
-            refreshed_count += 1
-            
-        logger.info(f"Device revoked successfully: {request.deviceIdHex}")
-        logger.info(f"Refreshed witnesses for {refreshed_count} remaining active devices")
+        # Store pending transaction with metadata and Safe parameters
+        pending_multisig_txs[tx_hash] = {
+            'safeTxHash': tx_hash,
+            'operationType': 'revoke',
+            'type': 'revokeDevice',
+            'device_id': request.deviceIdHex,
+            'deviceIdHex': request.deviceIdHex,
+            'id_prime': str(device['id_prime']),
+            'newAccumulator': new_root_hex,
+            'oldAccumulator': current_root_hex,
+            # Safe transaction parameters from chain_client
+            **tx_params,
+            # Metadata
+            'signatures': [],
+            'status': 'pending',
+            'proposer': settings.safe_owners[0] if settings.safe_owners else '0x0000000000000000000000000000000000000000',
+            'createdAt': datetime.now().isoformat(),
+            'required_signatures': 3
+        }
         
         return JSONResponse(
-            status_code=status.HTTP_200_OK,
-            content=RevokeResponse(
-                ok=True,
-                rootHex=new_root_hex,
-                message="Device revoked successfully"
-            ).dict()
+            status_code=202,
+            content={
+                "status": "pending",
+                "message": "Device revocation requires multi-sig approval",
+                "safeTxHash": tx_hash,
+                "device_id": request.deviceIdHex,
+                "required_signatures": 3,
+                "multisig_url": "http://localhost:3000/multisig-approve"
+            }
         )
         
     except Exception as e:
@@ -593,6 +618,80 @@ async def get_device_witness(device_id_hex: str) -> JSONResponse:
         return _handle_error(e, "Failed to get device witness")
 
 
+@app.get("/devices", response_model=DeviceListResponse)
+async def get_devices(status_filter: Optional[str] = None) -> JSONResponse:
+    """
+    Get list of all devices from the database.
+    
+    Query Parameters:
+        status_filter: Filter by status ('active', 'revoked', or omit for all)
+    
+    Returns:
+        DeviceListResponse with list of devices and counts
+    """
+    try:
+        logger.info(f"Fetching devices with status filter: {status_filter}")
+        
+        # Map status string to integer
+        status_int = None
+        if status_filter:
+            status_lower = status_filter.lower()
+            if status_lower == 'active':
+                status_int = DeviceStatus.ACTIVE
+            elif status_lower == 'revoked':
+                status_int = DeviceStatus.REVOKED
+            else:
+                raise ValueError(f"Invalid status filter: {status_filter}. Use 'active' or 'revoked'")
+        
+        # Get devices from database
+        devices_data = db.get_all_devices(status=status_int)
+        logger.info(f"Retrieved {len(devices_data)} devices from database")
+        
+        # Convert to response model
+        device_list = []
+        for device in devices_data:
+            try:
+                # Handle both bytes and string device_id
+                device_id_hex = device['device_id'].hex() if isinstance(device['device_id'], bytes) else device['device_id']
+                
+                device_list.append({
+                    'deviceIdHex': device_id_hex,
+                    'keyType': device['key_type'],
+                    'idPrime': device['id_prime'],
+                    'status': device['status'],
+                    'createdAt': device['created_at'],
+                    'updatedAt': device['updated_at']
+                })
+            except Exception as e:
+                logger.error(f"Error processing device: {e}, device data: {device}")
+                continue
+        
+        # Count by status
+        all_devices = db.get_all_devices() if status_int else devices_data
+        active_count = sum(1 for d in all_devices if d['status'] == DeviceStatus.ACTIVE)
+        revoked_count = sum(1 for d in all_devices if d['status'] == DeviceStatus.REVOKED)
+        
+        logger.info(f"Returning {len(device_list)} devices (active: {active_count}, revoked: {revoked_count})")
+        
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                'devices': device_list,
+                'total': len(all_devices),
+                'active': active_count,
+                'revoked': revoked_count
+            }
+        )
+        
+    except ValueError as e:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"error": str(e), "code": "INVALID_REQUEST"}
+        )
+    except Exception as e:
+        return _handle_error(e, "Failed to fetch devices")
+
+
 # Global exception handler
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
@@ -619,6 +718,211 @@ async def general_exception_handler(request, exc):
             code="INTERNAL_ERROR"
         ).dict()
     )
+
+
+# ============================================================================
+# MULTI-SIGNATURE ENDPOINTS
+# ============================================================================
+
+# In-memory storage for pending transactions (use Redis in production)
+pending_multisig_txs = {}
+
+@app.get("/multisig/safe-info")
+async def get_safe_info():
+    """Get Gnosis Safe configuration."""
+    try:
+        safe_info = chain.get_safe_info()
+        return {
+            "safeAddress": safe_info["safe_address"],
+            "registryAddress": safe_info["registry_address"],
+            "threshold": safe_info["threshold"],
+            "owners": safe_info["owners"]
+        }
+    except Exception as e:
+        logger.error(f"Error getting Safe info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/multisig/propose")
+async def propose_transaction(proposal: Dict[str, Any]):
+    """Propose a new multi-sig transaction."""
+    try:
+        safe_tx_hash = proposal["safeTxHash"]
+        
+        # Store pending transaction
+        pending_multisig_txs[safe_tx_hash] = {
+            **proposal,
+            "status": "pending",
+            "executedTxHash": None,
+            "executedAt": None
+        }
+        
+        logger.info(f"Transaction proposed: {safe_tx_hash}")
+        return {
+            "success": True,
+            "safeTxHash": safe_tx_hash,
+            "signatures": proposal["signatures"]
+        }
+    except Exception as e:
+        logger.error(f"Error proposing transaction: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/multisig/pending")
+async def get_pending_transactions():
+    """Get all pending multi-sig transactions."""
+    try:
+        pending = [
+            tx for tx in pending_multisig_txs.values()
+            if tx["status"] == "pending"
+        ]
+        return {"transactions": pending}
+    except Exception as e:
+        logger.error(f"Error getting pending transactions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/multisig/sign")
+async def sign_transaction(signature_data: Dict[str, Any]):
+    """Add signature to pending transaction."""
+    try:
+        safe_tx_hash = signature_data["safeTxHash"]
+        
+        if safe_tx_hash not in pending_multisig_txs:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        
+        tx = pending_multisig_txs[safe_tx_hash]
+        
+        # Check if already signed by this address
+        signer = signature_data["signer"].lower()
+        if any(sig["signer"].lower() == signer for sig in tx["signatures"]):
+            raise HTTPException(status_code=400, detail="Already signed by this address")
+        
+        # Add signature
+        tx["signatures"].append({
+            "signer": signature_data["signer"],
+            "signature": signature_data["signature"],
+            "r": signature_data["r"],
+            "s": signature_data["s"],
+            "v": signature_data["v"]
+        })
+        
+        logger.info(f"Signature added to {safe_tx_hash} by {signer}")
+        return {
+            "success": True,
+            "signatures": len(tx["signatures"]),
+            "threshold": tx.get("requiredSignatures", tx.get("required_signatures", 3))
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error adding signature: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/multisig/execute")
+async def execute_transaction(execution_data: Dict[str, Any]):
+    """Mark transaction as executed and process the operation."""
+    try:
+        safe_tx_hash = execution_data["safeTxHash"]
+        
+        if safe_tx_hash not in pending_multisig_txs:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        
+        tx = pending_multisig_txs[safe_tx_hash]
+        tx["status"] = "executed"
+        tx["executedTxHash"] = execution_data["txHash"]
+        tx["executedAt"] = execution_data.get("blockNumber")
+        
+        logger.info(f"Transaction executed: {safe_tx_hash} -> {execution_data['txHash']}")
+        
+        # Process the transaction based on type
+        operation_type = tx.get("operationType")
+        
+        if operation_type == "enroll":
+            # Sync blockchain state
+            await _sync_blockchain_state()
+            
+            # Store device in database
+            device_id = bytes.fromhex(tx["device_id"])
+            db.insert_device(
+                device_id=device_id,
+                pubkey_pem=tx["pubkey_pem"],
+                id_prime=int(tx["id_prime"]),
+                witness=tx["witness"],  # Old accumulator (witness for membership proof)
+                key_type=tx["key_type"],
+                status=DeviceStatus.ACTIVE
+            )
+            logger.info(f"Device {tx['device_id'][:16]}... stored in database")
+            
+            # Refresh witnesses for all existing active devices
+            active_devices = db.get_active_devices()
+            new_root_hex = db.get_meta(MetaKeys.ROOT_HEX)
+            new_root = settings.parse_accumulator_from_hex(new_root_hex)
+            
+            refreshed_count = 0
+            for dev in active_devices:
+                # Skip the newly enrolled device (it already has correct witness)
+                if dev['device_id'] == device_id:
+                    continue
+                
+                device_prime = dev['id_prime']
+                if isinstance(device_prime, str):
+                    device_prime = int(device_prime)
+                
+                # Compute fresh witness using trapdoor division
+                fresh_witness = trapdoor_remove_member_with_lambda(
+                    A=new_root,
+                    prime=device_prime,
+                    N=settings.N,
+                    lambda_n=settings.lambda_n
+                )
+                fresh_witness_hex = settings.format_accumulator_to_hex(fresh_witness)
+                db.update_device_witness(dev['device_id'], fresh_witness_hex)
+                refreshed_count += 1
+            
+            logger.info(f"Refreshed witnesses for {refreshed_count} existing devices")
+        
+        elif operation_type == "revoke":
+            # Sync blockchain state
+            await _sync_blockchain_state()
+            
+            # Update device status in database
+            device_id = bytes.fromhex(tx["device_id"])
+            db.update_device_status(device_id, DeviceStatus.REVOKED)
+            logger.info(f"Device {tx['device_id'][:16]}... marked as revoked in database")
+            
+            # Refresh witnesses for remaining active devices
+            active_devices = db.get_active_devices()
+            new_root_hex = db.get_meta(MetaKeys.ROOT_HEX)
+            new_root = settings.parse_accumulator_from_hex(new_root_hex)
+            
+            refreshed_count = 0
+            for dev in active_devices:
+                device_prime = dev['id_prime']
+                if isinstance(device_prime, str):
+                    device_prime = int(device_prime)
+                
+                # Compute fresh witness using trapdoor division
+                fresh_witness = trapdoor_remove_member_with_lambda(
+                    A=new_root,
+                    prime=device_prime,
+                    N=settings.N,
+                    lambda_n=settings.lambda_n
+                )
+                fresh_witness_hex = settings.format_accumulator_to_hex(fresh_witness)
+                db.update_device_witness(dev['device_id'], fresh_witness_hex)
+                refreshed_count += 1
+            
+            logger.info(f"Refreshed witnesses for {refreshed_count} remaining active devices")
+        
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing executed transaction: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

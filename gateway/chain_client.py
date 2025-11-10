@@ -54,25 +54,23 @@ class ChainClient:
             )
             
             # Test contract connectivity
-            contract.functions.getCurrentState().call()
-            logger.info("Contract connectivity verified")
+            state = contract.functions.getCurrentState().call()
+            
+            # AccumulatorRegistry returns 7 values
+            acc, hash_val, ver, safe_addr, threshold, owner_count, paused = state
+            logger.info(f"Multi-sig contract connectivity verified")
+            logger.info(f"Safe: {safe_addr}, Threshold: {threshold}, Owners: {owner_count}")
+            logger.info(f"Contract version: {ver}")
             
             return contract
         except Exception as e:
             raise ConnectionError(f"Cannot initialize contract: {e}")
     
     def _verify_ownership(self) -> None:
-        """Verify that our account is the contract owner."""
-        try:
-            contract_owner = self.contract.functions.owner().call()
-            if contract_owner.lower() != self.account.address.lower():
-                raise PermissionError(
-                    f"Account {self.account.address} is not the contract owner. "
-                    f"Owner is: {contract_owner}"
-                )
-            logger.info("Ownership verified")
-        except Exception as e:
-            raise PermissionError(f"Cannot verify ownership: {e}")
+        """Verify Safe configuration."""
+        logger.info("Multi-sig mode: Safe-based authorization")
+        logger.info(f"Contract controlled by Safe: {settings.safe_address}")
+        return
     
     def get_state(self) -> Tuple[str, str, int]:
         """
@@ -82,7 +80,10 @@ class ChainClient:
             Tuple[str, str, int]: (accumulator_hex, hash_hex, version)
         """
         try:
-            accumulator_bytes, hash_bytes32, version = self.contract.functions.getCurrentState().call()
+            state = self.contract.functions.getCurrentState().call()
+            
+            # AccumulatorRegistry returns 7 values
+            accumulator_bytes, hash_bytes32, version, _, _, _, _ = state
             
             # Convert bytes to hex strings
             accumulator_hex = accumulator_bytes.hex()
@@ -106,36 +107,130 @@ class ChainClient:
         data = f"{timestamp}{new_accumulator_hex}{parent_hash}"
         return self.w3.keccak(text=data).hex()
     
-    def _send_transaction(self, tx_function, *args) -> str:
-        """Send transaction with proper gas estimation and nonce management."""
+    def _send_transaction(self, tx_function, *args):
+        """Send transaction through Safe multi-sig.
+        
+        Returns:
+            tuple: (safe_tx_hash, tx_params)
+        """
         try:
-            # Build transaction
-            tx = tx_function(*args).build_transaction({
-                'from': self.account.address,
-                'nonce': self.w3.eth.get_transaction_count(self.account.address),
-                'gas': 2000000,  # High gas limit for safety 
-                'gasPrice': self.w3.to_wei('1', 'gwei'),
-            })
-            
-            # Sign and send transaction
-            signed_tx = self.account.sign_transaction(tx)
-            # Handle both old and new web3 versions
-            raw_tx = getattr(signed_tx, 'rawTransaction', getattr(signed_tx, 'raw_transaction', None))
-            tx_hash = self.w3.eth.send_raw_transaction(raw_tx)
-            
-            # Wait for confirmation
-            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)
-            
-            if receipt.status != 1:
-                raise Exception(f"Transaction failed with status: {receipt.status}")
-            
-            tx_hash_hex = tx_hash.hex()
-            logger.info(f"Transaction successful: {tx_hash_hex}")
-            
-            return tx_hash_hex
+            return self._execute_through_safe(tx_function, *args)
         except Exception as e:
             logger.error(f"Transaction failed: {e}")
             raise
+    
+    def _execute_through_safe(self, tx_function, *args):
+        """Execute transaction through Gnosis Safe (multisig mode).
+        
+        For threshold > 1: This creates a PENDING transaction that requires
+        additional signatures. Returns a tuple of (safe_tx_hash, tx_params dict).
+        
+        Returns:
+            tuple: (safe_tx_hash, tx_params) where tx_params contains all Safe transaction parameters
+        to track the pending transaction in the multi-sig system.
+        """
+        from web3 import Web3
+        import json
+        
+        # Encode the call data for the target contract
+        call_data = tx_function(*args).build_transaction({
+            'from': settings.safe_address,
+            'gas': 2000000,
+            'gasPrice': 0,
+        })['data']
+        
+        # Get Safe nonce
+        safe_abi_minimal = [
+            {"inputs": [], "name": "nonce", "outputs": [{"type": "uint256"}], "stateMutability": "view", "type": "function"},
+            {"inputs": [], "name": "getThreshold", "outputs": [{"type": "uint256"}], "stateMutability": "view", "type": "function"}
+        ]
+        
+        safe_contract = self.w3.eth.contract(
+            address=Web3.to_checksum_address(settings.safe_address),
+            abi=safe_abi_minimal
+        )
+        
+        threshold = safe_contract.functions.getThreshold().call()
+        nonce = safe_contract.functions.nonce().call()
+        
+        # Transaction parameters for Safe
+        to = settings.registry_address
+        value = 0
+        data = call_data
+        operation = 0  # Call
+        safeTxGas = 0
+        baseGas = 0
+        gasPrice = 0
+        gasToken = "0x0000000000000000000000000000000000000000"
+        refundReceiver = "0x0000000000000000000000000000000000000000"
+        
+        # Import eth_abi for encoding
+        from eth_abi import encode
+        
+        # Calculate Safe transaction hash (EIP-712)
+        # Domain separator
+        domain_separator = self.w3.keccak(
+            encode(
+                ['bytes32', 'uint256', 'address'],
+                [
+                    self.w3.keccak(text="EIP712Domain(uint256 chainId,address verifyingContract)"),
+                    31337,  # Anvil chain ID
+                    Web3.to_checksum_address(settings.safe_address)
+                ]
+            )
+        )
+        
+        # Safe tx type hash
+        safe_tx_typehash = self.w3.keccak(
+            text="SafeTx(address to,uint256 value,bytes data,uint8 operation,uint256 safeTxGas,uint256 baseGas,uint256 gasPrice,address gasToken,address refundReceiver,uint256 nonce)"
+        )
+        
+        # Encode Safe transaction
+        safe_tx_hash_data = self.w3.keccak(
+            encode(
+                ['bytes32', 'address', 'uint256', 'bytes32', 'uint8', 'uint256', 'uint256', 'uint256', 'address', 'address', 'uint256'],
+                [
+                    safe_tx_typehash,
+                    Web3.to_checksum_address(to),
+                    value,
+                    self.w3.keccak(bytes.fromhex(data[2:])),
+                    operation,
+                    safeTxGas,
+                    baseGas,
+                    gasPrice,
+                    Web3.to_checksum_address(gasToken),
+                    Web3.to_checksum_address(refundReceiver),
+                    nonce
+                ]
+            )
+        )
+        
+        # Final Safe transaction hash
+        safe_tx_hash = self.w3.keccak(
+            b"\x19\x01" + domain_separator + safe_tx_hash_data
+        ).hex()
+        
+        logger.info(f"📝 Multi-sig transaction created")
+        logger.info(f"   Safe TX Hash: {safe_tx_hash}")
+        logger.info(f"   Threshold: {threshold} signatures required")
+        logger.info(f"   Status: PENDING (not executed)")
+        logger.info(f"   Next: Go to http://localhost:3000/multisig-approve to sign & execute")
+        
+        # Return the Safe transaction hash and parameters
+        tx_params = {
+            'to': to,
+            'value': value,
+            'data': data,
+            'operation': operation,
+            'safeTxGas': safeTxGas,
+            'baseGas': baseGas,
+            'gasPrice': gasPrice,
+            'gasToken': gasToken,
+            'refundReceiver': refundReceiver,
+            'nonce': nonce
+        }
+        
+        return safe_tx_hash, tx_params
 
     @staticmethod
     def _to_bytes(hex_str: str) -> bytes:
@@ -281,6 +376,15 @@ class ChainClient:
                 'connected': False,
                 'error': str(e)
             }
+    
+    def get_safe_info(self) -> dict:
+        """Get Gnosis Safe configuration."""
+        return {
+            "safe_address": settings.safe_address,
+            "registry_address": settings.registry_address,
+            "threshold": settings.safe_threshold,
+            "owners": [owner.lower() for owner in settings.safe_owners]
+        }
 
 
 def main():
