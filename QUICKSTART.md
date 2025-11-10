@@ -67,7 +67,7 @@ Edit `.env` and update these values:
 
 ```bash
 # Update with your deployed contract address
-REGISTRY_ADDRESS=0x5FbDB2315678afecb367f032d93F642f64180aa3
+REGISTRY_ADDRESS=0xdc64a140aa3e981100a9beca4e685f962f0cf6c9
 
 # The private key should already match from Step 1
 PRIVATE_KEY_ADMIN=0xac0974bec39a17e36ba4a6b4d238ff944bacb378cbed5efcae784d7bf4f2ff80
@@ -412,20 +412,82 @@ python get_witness.py http://127.0.0.1:8000
 ### Multiple devices (separate state per device)
 
 ```bash
-# Enroll 3 devices
-for i in 1 2 3; do 
+# ⚠️  IMPORTANT: Sequential Enrollment Required
+# Each enrollment must be EXECUTED before the next one can be created,
+# because the contract validates the parent hash (current state).
+#
+# Sequential workflow: Enroll ONE device, approve & execute it, then enroll the next.
+
+# Enroll 3 devices sequentially
+# 1. Enroll device 1
+export DEVICE_STATE_DIR=./device_state_1
+python3 keygen.py
+python3 enroll.py http://127.0.0.1:8000
+# 2. Go to frontend, sign & execute transaction
+# 3. Wait for execution to complete
+# 4. Enroll device 2
+export DEVICE_STATE_DIR=./device_state_2  
+python3 keygen.py
+python3 enroll.py http://127.0.0.1:8000
+# 5. Go to frontend, sign & execute transaction
+# 6. Wait for execution to complete
+# 7. Repeat for device 3...
+export DEVICE_STATE_DIR=./device_state_3  
+python3 keygen.py
+python3 enroll.py http://127.0.0.1:8000
+# 8. Go to frontend, sign & execute transaction
+# 9. Wait for execution to complete
+
+# After all devices are enrolled, update their local state:
+for i in 1 2 3; do
   export DEVICE_STATE_DIR=./device_state_$i
-  python keygen.py
-  python enroll.py http://127.0.0.1:8000
+  python3 check_enrollment.py http://127.0.0.1:8000
 done
 
-# Authenticate all
-for i in 1 2 3; do 
+# Authenticate all (one-time test)
+for i in 1 2 ; do 
   export DEVICE_STATE_DIR=./device_state_$i
-  python auth.py http://127.0.0.1:8000
+  python3 auth.py http://127.0.0.1:8000
 done
 ```
+
+### Production Flow: Run Device Daemons
+
+In production, IoT devices should run periodic authentication to maintain active status:
+
+```bash
+# Run daemon for single device (authenticates every 60 seconds by default)
+python3 device_daemon.py http://127.0.0.1:8000
+
+# Custom interval (e.g., every 30 seconds)
+python3 device_daemon.py http://127.0.0.1:8000 --interval 30
+
+# Run multiple device daemons (in separate terminals)
+# Terminal 1:
+DEVICE_STATE_DIR=./device_state_1 python3 device_daemon.py http://127.0.0.1:8000
+
+# Terminal 2:
+DEVICE_STATE_DIR=./device_state_2 python3 device_daemon.py http://127.0.0.1:8000
+
+# Terminal 3:
+DEVICE_STATE_DIR=./device_state_3 python3 device_daemon.py http://127.0.0.1:8000
+```
+
+**Daemon Features:**
+- ✅ **Periodic authentication**: Runs auth every N seconds (default: 60)
+- ✅ **Auto-enrollment check**: Detects pending multi-sig approval
+- ✅ **Witness refresh**: Automatically updates local witness when needed
+- ✅ **Exponential backoff**: Retries with increasing delays on failure
+- ✅ **Graceful shutdown**: Ctrl+C to stop cleanly
+- ✅ **Failure threshold**: Stops after 5 consecutive failures
+
+**Typical Production Flow:**
+1. **Setup** (one-time): `keygen.py` → `enroll.py` → approve multi-sig (if enabled)
+2. **Monitor**: `check_enrollment.py` to verify approval
+3. **Run**: `device_daemon.py` to maintain active status
+4. **Deploy**: Run daemon as systemd service or Docker container
 
 Notes:
 - `DEVICE_STATE_DIR` selects the folder where each script reads/writes `state.json`.
 - Omit the base URL argument to use the default `http://127.0.0.1:8000`.
+- Daemon logs all activity with timestamps for monitoring.
