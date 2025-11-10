@@ -24,15 +24,35 @@ def sign(private_key_b64: str, message: str) -> str:
     return base64.b64encode(sig).decode()
 
 
-def main():
-    base_url = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8000"
+def authenticate_device(base_url: str) -> dict:
+    """
+    Authenticate device with gateway.
+    
+    Args:
+        base_url: Gateway base URL
+        
+    Returns:
+        dict with keys: success (bool), message (str), newWitnessHex (str|None)
+        
+    Raises:
+        Exception: If state is invalid or request fails
+    """
+    base_url = base_url.rstrip('/')
+    
+    # Check if enrollment is pending
+    pending = get("pending_enrollment")
+    if pending:
+        return {
+            "success": False,
+            "message": "Enrollment pending multi-sig approval",
+            "safeTxHash": get('safe_tx_hash'),
+            "deviceIdHex": get('device_id_hex')
+        }
 
     required = ["device_id_hex", "id_prime", "witness_hex", "public_key_pem", "private_key"]
     missing = [k for k in required if get(k) is None]
     if missing:
-        print(f"❌ Missing in state: {', '.join(missing)}")
-        print("   Run: python keygen.py && python enroll.py")
-        sys.exit(1)
+        raise Exception(f"Missing required state fields: {', '.join(missing)}")
 
     nonce_hex = secrets.token_hex(16)
     signature_b64 = sign(get("private_key"), nonce_hex)
@@ -51,17 +71,61 @@ def main():
 
     if resp.status_code != 200:
         try:
-            print(f"❌ Auth failed: {resp.json()}")
+            error_data = resp.json()
+            return {
+                "success": False,
+                "message": error_data.get("detail", f"HTTP {resp.status_code}")
+            }
         except Exception:
-            print(f"❌ Auth failed: HTTP {resp.status_code}")
-        sys.exit(1)
+            return {
+                "success": False,
+                "message": f"HTTP {resp.status_code}"
+            }
 
     data = resp.json()
-    print("✅ Authentication successful")
+    
+    # Update witness if server sent new one
+    new_witness = data.get("newWitnessHex")
+    if new_witness:
+        update_state({"witness_hex": new_witness})
+    
+    return {
+        "success": True,
+        "message": data.get("message", "Device authenticated"),
+        "newWitnessHex": new_witness
+    }
 
-    if data.get("newWitnessHex"):
-        update_state({"witness_hex": data["newWitnessHex"]})
-        print("🔄 Witness updated from server response")
+
+def main():
+    base_url = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8000"
+
+    try:
+        result = authenticate_device(base_url)
+        
+        if not result["success"]:
+            if result.get("safeTxHash"):
+                # Pending multi-sig
+                print("⚠️  Enrollment is pending multi-sig approval")
+                print(f"   • Safe TX Hash: {result['safeTxHash']}")
+                print(f"   • Device ID: {result['deviceIdHex']}")
+                print("\n💡 Next steps:")
+                print("   1. Visit http://localhost:3000/multisig-approve")
+                print("   2. Have 3 owners sign the transaction")
+                print("   3. Execute the transaction")
+                print("   4. Run: python check_enrollment.py")
+                print("   5. Once enrolled, run this script again to authenticate")
+            else:
+                print(f"❌ Auth failed: {result['message']}")
+            sys.exit(1)
+        
+        print(f"✅ {result['message']}")
+        
+        if result.get("newWitnessHex"):
+            print("🔄 Witness updated from server response")
+            
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
