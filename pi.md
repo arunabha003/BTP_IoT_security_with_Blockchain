@@ -1,5 +1,5 @@
 
-export GATEWAY_URL="https://e4ff8260700a.ngrok-free.app"
+export GATEWAY_URL="https://15dce3248ee6.ngrok-free.app"
 
 export DEVICE_STATE_DIR=./device_state_1
 python3 keygen.py
